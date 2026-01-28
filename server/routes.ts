@@ -102,7 +102,7 @@ export async function registerRoutes(
   // === CHAT ADVISOR ===
   app.post(api.chat.advisor.path, async (req, res) => {
     try {
-      const { sessionId, message } = api.chat.advisor.input.parse(req.body);
+      const { sessionId, message, conversationHistory = [] } = api.chat.advisor.input.parse(req.body);
       const session = await storage.getSession(sessionId);
       if (!session) return res.status(404).json({ message: "Session not found" });
       
@@ -175,12 +175,23 @@ export async function registerRoutes(
         - Acknowledge what they share before asking the next question.
       `;
 
+      // Build messages array with conversation history
+      const messages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [
+        { role: "system", content: systemPrompt },
+      ];
+      
+      // Add conversation history (limited to last 10 exchanges for context window)
+      const recentHistory = conversationHistory.slice(-20);
+      for (const msg of recentHistory) {
+        messages.push({ role: msg.role, content: msg.content });
+      }
+      
+      // Add current user message
+      messages.push({ role: "user", content: message });
+      
       const completion = await openai.chat.completions.create({
         model: "gpt-5.1",
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: message }
-        ],
+        messages,
         response_format: { type: "json_object" },
       });
 

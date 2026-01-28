@@ -60,11 +60,15 @@ export function useChatAdvisor() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async ({ sessionId, message }: { sessionId: string; message: string }) => {
+    mutationFn: async ({ sessionId, message, conversationHistory }: { 
+      sessionId: string; 
+      message: string; 
+      conversationHistory?: Array<{ role: "user" | "assistant"; content: string }>;
+    }) => {
       const res = await fetch(api.chat.advisor.path, {
         method: api.chat.advisor.method,
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId, message }),
+        body: JSON.stringify({ sessionId, message, conversationHistory }),
         credentials: "include",
       });
       if (!res.ok) throw new Error("Failed to send message");

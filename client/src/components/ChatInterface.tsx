@@ -69,11 +69,16 @@ export function ChatInterface({ sessionId }: ChatInterfaceProps) {
       timestamp: new Date(),
     };
 
+    // Build conversation history from current messages (excluding intro)
+    const conversationHistory = messages
+      .filter(m => m.id !== "intro")
+      .map(m => ({ role: m.role as "user" | "assistant", content: m.content }));
+
     setMessages((prev) => [...prev, userMsg]);
     setInput("");
 
     chatMutation.mutate(
-      { sessionId, message: input },
+      { sessionId, message: input, conversationHistory },
       {
         onSuccess: (data) => {
           const assistantMsg: Message = {

@@ -66,6 +66,10 @@ export const api = {
       input: z.object({
         sessionId: z.string(),
         message: z.string(),
+        conversationHistory: z.array(z.object({
+          role: z.enum(["user", "assistant"]),
+          content: z.string(),
+        })).optional(),
       }),
       responses: {
         200: chatAdvisorResponseSchema,
