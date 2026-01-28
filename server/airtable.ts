@@ -7,13 +7,13 @@ const AIRTABLE_TABLE_ID = process.env.AIRTABLE_TABLE_ID;
 interface AirtableRecord {
   id: string;
   fields: {
-    "Model name"?: string;
-    "grades"?: string;
+    "Model Name"?: string;
+    "Grades"?: string;
     "Description"?: string;
     "Model Link"?: string;
     "Outcome Types"?: string | string[];
     "Key Practices"?: string | string[];
-    "Implementation supports"?: string | string[];
+    "Implementation Supports"?: string | string[];
   };
 }
 
@@ -59,16 +59,16 @@ export async function fetchModelsFromAirtable(): Promise<InsertModel[]> {
     for (const record of data.records) {
       const fields = record.fields;
       
-      if (!fields["Model name"]) continue;
+      if (!fields["Model Name"]) continue;
 
       models.push({
-        name: fields["Model name"] || "",
-        grades: fields["grades"] || "",
+        name: fields["Model Name"] || "",
+        grades: fields["Grades"] || "",
         description: fields["Description"] || "",
         link: fields["Model Link"] || "",
         outcomeTypes: normalizeToString(fields["Outcome Types"]),
         keyPractices: normalizeToString(fields["Key Practices"]),
-        implementationSupports: normalizeToString(fields["Implementation supports"]),
+        implementationSupports: normalizeToString(fields["Implementation Supports"]),
       });
     }
 

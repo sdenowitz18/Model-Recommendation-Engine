@@ -55,6 +55,7 @@ export class DatabaseStorage implements IStorage {
   }
 
   async syncModelsFromAirtable(newModels: InsertModel[]): Promise<Model[]> {
+    await db.delete(recommendations);
     await db.delete(models);
     if (newModels.length === 0) return [];
     return await db.insert(models).values(newModels).returning();
