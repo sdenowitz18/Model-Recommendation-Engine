@@ -67,15 +67,7 @@ export default function Home() {
                 <span className="text-[10px] text-muted-foreground uppercase tracking-widest -mt-0.5">Model Advisor</span>
               </div>
             </div>
-            <div>
-              <h1 className="text-xl font-display font-bold text-foreground">School Design Dashboard</h1>
-              <p className="text-sm text-muted-foreground">
-                {context?.isReadyForRecommendation 
-                  ? "Here are the best models based on your vision."
-                  : "Building your school profile..."}
-              </p>
-            </div>
-            <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2">
               <Link href="/admin/settings">
                 <Button variant="outline" size="sm" data-testid="button-settings">
                   <Settings className="w-4 h-4 mr-2" />
