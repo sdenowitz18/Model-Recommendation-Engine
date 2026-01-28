@@ -43,6 +43,8 @@ waitForPort = 5000
 [userenv.shared]
 AI_INTEGRATIONS_OPENAI_BASE_URL = "http://localhost:1106/modelfarm/openai"
 AI_INTEGRATIONS_OPENAI_API_KEY = "_DUMMY_API_KEY_"
+AIRTABLE_BASE_ID = "apps0C0qZ2Bk9HTOJ"
+AIRTABLE_TABLE_ID = "tblG681MURUof7xEN"
 
 [agent]
 integrations = ["javascript_openai_ai_integrations:2.0.0"]

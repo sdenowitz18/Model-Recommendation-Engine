@@ -12,6 +12,7 @@ export interface IStorage {
   getAllModels(): Promise<Model[]>;
   getModel(id: number): Promise<Model | undefined>;
   createModel(model: InsertModel): Promise<Model>;
+  syncModelsFromAirtable(newModels: InsertModel[]): Promise<Model[]>;
   
   // Sessions
   createSession(sessionId: string): Promise<Session>;
@@ -51,6 +52,12 @@ export class DatabaseStorage implements IStorage {
   async createModel(model: InsertModel): Promise<Model> {
     const [newModel] = await db.insert(models).values(model).returning();
     return newModel;
+  }
+
+  async syncModelsFromAirtable(newModels: InsertModel[]): Promise<Model[]> {
+    await db.delete(models);
+    if (newModels.length === 0) return [];
+    return await db.insert(models).values(newModels).returning();
   }
 
   async createSession(sessionId: string): Promise<Session> {

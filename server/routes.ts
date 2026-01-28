@@ -98,6 +98,22 @@ export async function registerRoutes(
       res.status(500).json({ message: "Internal server error during import" });
     }
   });
+
+  // === AIRTABLE SYNC ===
+  app.post("/api/admin/refresh-from-airtable", async (req, res) => {
+    try {
+      const { fetchModelsFromAirtable } = await import("./airtable");
+      const airtableModels = await fetchModelsFromAirtable();
+      const syncedModels = await storage.syncModelsFromAirtable(airtableModels);
+      res.json({ 
+        message: `Successfully synced ${syncedModels.length} models from Airtable`, 
+        count: syncedModels.length 
+      });
+    } catch (err) {
+      console.error("Airtable sync error:", err);
+      res.status(500).json({ message: err instanceof Error ? err.message : "Failed to sync from Airtable" });
+    }
+  });
   
   // === SESSIONS ===
   app.post(api.sessions.create.path, async (req, res) => {

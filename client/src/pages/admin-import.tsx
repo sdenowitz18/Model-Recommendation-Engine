@@ -4,13 +4,42 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
-import { Upload, FileSpreadsheet, Loader2, ArrowLeft } from "lucide-react";
+import { Upload, FileSpreadsheet, Loader2, ArrowLeft, RefreshCw, Database } from "lucide-react";
 
 export default function AdminImport() {
   const [, setLocation] = useLocation();
   const { toast } = useToast();
   const [file, setFile] = useState<File | null>(null);
   const [isUploading, setIsUploading] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
+
+  const handleAirtableSync = async () => {
+    setIsSyncing(true);
+    try {
+      const response = await fetch("/api/admin/refresh-from-airtable", {
+        method: "POST",
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.message || "Sync failed");
+      }
+
+      const result = await response.json();
+      toast({
+        title: "Sync Successful",
+        description: result.message,
+      });
+    } catch (error: any) {
+      toast({
+        title: "Sync Failed",
+        description: error.message,
+        variant: "destructive",
+      });
+    } finally {
+      setIsSyncing(false);
+    }
+  };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
@@ -121,6 +150,39 @@ export default function AdminImport() {
               Selected: {file.name}
             </p>
           )}
+        </CardContent>
+      </Card>
+
+      <Card className="mt-6">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Database className="h-6 w-6 text-primary" />
+            Sync from Airtable
+          </CardTitle>
+          <CardDescription>
+            Refresh the model database from your connected Airtable table.
+            This will replace all existing models with the latest data from Airtable.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Button 
+            className="w-full" 
+            onClick={handleAirtableSync} 
+            disabled={isSyncing}
+            data-testid="button-refresh-airtable"
+          >
+            {isSyncing ? (
+              <>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                Syncing...
+              </>
+            ) : (
+              <>
+                <RefreshCw className="mr-2 h-4 w-4" />
+                Refresh from Airtable
+              </>
+            )}
+          </Button>
         </CardContent>
       </Card>
     </div>
