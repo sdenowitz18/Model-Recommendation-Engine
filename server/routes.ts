@@ -177,22 +177,13 @@ ${basePrompt}
 - Constraints: ${context.constraints?.join(", ") || "None"}
 
 === RESPONSE FORMAT ===
-You MUST respond in JSON format ONLY with this exact schema:
-{
-  "assistant_message": "your response to the user",
-  "context_patch": {
-    "vision": "extracted vision string or empty string",
-    "desiredOutcomes": ["extracted outcomes"],
-    "gradeBands": ["extracted grades"],
-    "keyPractices": ["extracted practices"],
-    "implementationSupportsNeeded": ["extracted supports"],
-    "constraints": ["extracted constraints"],
-    "notes": "any other notes"
-  },
-  "next_question": "your next focused question or null if recommending",
-  "should_recommend": true/false (true if enough context gathered OR user explicitly asks for recommendations),
-  "should_compare": true/false (true if user asks to compare models)
-}
+You MUST respond in valid JSON format ONLY. Do not include any text outside the JSON object.
+The JSON object must have these exact keys:
+- "assistant_message": string with your response to the user
+- "context_patch": object containing any extracted information with keys: vision (string), desiredOutcomes (array), gradeBands (array), keyPractices (array), implementationSupportsNeeded (array), constraints (array), notes (string)
+- "next_question": string with your next question, or null if you are ready to recommend
+- "should_recommend": boolean, set to true if enough context has been gathered OR the user explicitly asks for recommendations
+- "should_compare": boolean, set to true if the user asks to compare models
       `;
 
       // Build messages array with conversation history
@@ -347,8 +338,10 @@ You MUST respond in JSON format ONLY with this exact schema:
   // === ADMIN CONFIG ===
   app.get(api.admin.getConfig.path, async (req, res) => {
     const config = await storage.getAdvisorConfig();
+    const defaultPrompt = getDefaultSystemPrompt();
     res.json({
-      systemPrompt: config?.systemPrompt || getDefaultSystemPrompt(),
+      systemPrompt: config?.systemPrompt || defaultPrompt,
+      defaultPrompt: defaultPrompt,
       updatedAt: config?.updatedAt?.toISOString() || null,
     });
   });

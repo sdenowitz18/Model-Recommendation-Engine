@@ -1,25 +1,26 @@
 import { useState, useEffect } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useMutation } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
-import { Loader2, Save, RotateCcw, Settings, ArrowLeft } from "lucide-react";
+import { Loader2, Save, RotateCcw, Settings, ArrowLeft, RefreshCw } from "lucide-react";
 import { Link } from "wouter";
 import { api } from "@shared/routes";
+import { apiRequest, queryClient } from "@/lib/queryClient";
+
+interface ConfigResponse {
+  systemPrompt: string;
+  defaultPrompt: string;
+  updatedAt: string | null;
+}
 
 export default function AdminSettings() {
   const { toast } = useToast();
-  const queryClient = useQueryClient();
   const [systemPrompt, setSystemPrompt] = useState("");
 
-  const { data: config, isLoading } = useQuery({
+  const { data: config, isLoading } = useQuery<ConfigResponse>({
     queryKey: [api.admin.getConfig.path],
-    queryFn: async () => {
-      const res = await fetch(api.admin.getConfig.path, { credentials: "include" });
-      if (!res.ok) throw new Error("Failed to fetch config");
-      return res.json() as Promise<{ systemPrompt: string; updatedAt: string | null }>;
-    },
   });
 
   useEffect(() => {
@@ -30,14 +31,7 @@ export default function AdminSettings() {
 
   const saveMutation = useMutation({
     mutationFn: async (prompt: string) => {
-      const res = await fetch(api.admin.saveConfig.path, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ systemPrompt: prompt }),
-        credentials: "include",
-      });
-      if (!res.ok) throw new Error("Failed to save config");
-      return res.json();
+      return apiRequest("POST", api.admin.saveConfig.path, { systemPrompt: prompt });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: [api.admin.getConfig.path] });
@@ -59,9 +53,15 @@ export default function AdminSettings() {
     saveMutation.mutate(systemPrompt);
   };
 
-  const handleReset = () => {
+  const handleResetToSaved = () => {
     if (config?.systemPrompt) {
       setSystemPrompt(config.systemPrompt);
+    }
+  };
+
+  const handleResetToDefault = () => {
+    if (config?.defaultPrompt) {
+      setSystemPrompt(config.defaultPrompt);
     }
   };
 
@@ -123,7 +123,7 @@ export default function AdminSettings() {
               </p>
             )}
 
-            <div className="flex items-center gap-3 pt-4 border-t">
+            <div className="flex items-center gap-3 pt-4 border-t flex-wrap">
               <Button
                 onClick={handleSave}
                 disabled={saveMutation.isPending}
@@ -138,12 +138,21 @@ export default function AdminSettings() {
               </Button>
               <Button
                 variant="outline"
-                onClick={handleReset}
+                onClick={handleResetToSaved}
                 disabled={saveMutation.isPending}
                 data-testid="button-reset-config"
               >
                 <RotateCcw className="w-4 h-4 mr-2" />
-                Reset to Saved
+                Undo Changes
+              </Button>
+              <Button
+                variant="outline"
+                onClick={handleResetToDefault}
+                disabled={saveMutation.isPending}
+                data-testid="button-reset-default"
+              >
+                <RefreshCw className="w-4 h-4 mr-2" />
+                Reset to Default
               </Button>
             </div>
           </CardContent>
