@@ -20,15 +20,30 @@ interface ChatInterfaceProps {
   sessionId: string;
 }
 
+const getStorageKey = (sessionId: string) => `school_advisor_messages_${sessionId}`;
+
+const defaultMessage: Message = {
+  id: "intro",
+  role: "assistant",
+  content: "Hello! I'm your School Design Advisor from Transcend Education. I'll help you find the best-fit design models for your school by learning about your context step by step.\n\nLet's start with some basics: **Where is your school located, and what grades does it serve?**",
+  timestamp: new Date(),
+};
+
+function loadMessages(sessionId: string): Message[] {
+  try {
+    const saved = localStorage.getItem(getStorageKey(sessionId));
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      return parsed.map((m: Message) => ({ ...m, timestamp: new Date(m.timestamp) }));
+    }
+  } catch (e) {
+    console.error("Failed to load messages from localStorage:", e);
+  }
+  return [defaultMessage];
+}
+
 export function ChatInterface({ sessionId }: ChatInterfaceProps) {
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      id: "intro",
-      role: "assistant",
-      content: "Hello! I'm your School Design Advisor from Transcend Education. I'll help you find the best-fit design models for your school by learning about your context step by step.\n\nLet's start with some basics: **Where is your school located, and what grades does it serve?**",
-      timestamp: new Date(),
-    },
-  ]);
+  const [messages, setMessages] = useState<Message[]>(() => loadMessages(sessionId));
   const [input, setInput] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
   
@@ -36,17 +51,26 @@ export function ChatInterface({ sessionId }: ChatInterfaceProps) {
   const clearSession = useClearSession();
   const { data: context, refetch: refetchContext } = useSessionContext(sessionId);
 
+  // Load messages when sessionId changes
+  useEffect(() => {
+    setMessages(loadMessages(sessionId));
+  }, [sessionId]);
+
+  // Persist messages to localStorage whenever they change
+  useEffect(() => {
+    try {
+      localStorage.setItem(getStorageKey(sessionId), JSON.stringify(messages));
+    } catch (e) {
+      console.error("Failed to save messages to localStorage:", e);
+    }
+  }, [messages, sessionId]);
+
   const handleClearConversation = () => {
     clearSession.mutate(sessionId, {
       onSuccess: () => {
-        setMessages([
-          {
-            id: "intro",
-            role: "assistant",
-            content: "Hello! I'm your School Design Advisor from Transcend Education. I'll help you find the best-fit design models for your school by learning about your context step by step.\n\nLet's start with some basics: **Where is your school located, and what grades does it serve?**",
-            timestamp: new Date(),
-          },
-        ]);
+        // Clear localStorage for this session
+        localStorage.removeItem(getStorageKey(sessionId));
+        setMessages([defaultMessage]);
         refetchContext();
       },
     });

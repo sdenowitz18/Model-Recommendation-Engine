@@ -39,7 +39,7 @@ export function ModelCard({ model, score, rationale, onSelectForComparison, isSe
         )}
         {score && (
           <div className="absolute top-3 right-3 bg-white/95 backdrop-blur shadow-sm px-3 py-1 rounded-full text-xs font-bold text-primary flex items-center gap-1 border border-primary/10">
-            <span className="text-base">{Math.round(score * 10)}%</span> Match
+            <span className="text-base">{score}%</span> Match
           </div>
         )}
         <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" />

@@ -279,47 +279,98 @@ The JSON object must have these exact keys:
     const allModels = await storage.getAllModels();
     if (!context) return;
 
+    // Helper: check if any keyword from user input matches model text
+    const fuzzyMatch = (userTerms: string[], modelText: string): string[] => {
+      const modelLower = modelText.toLowerCase();
+      const matches: string[] = [];
+      for (const term of userTerms) {
+        const words = term.toLowerCase().split(/\s+/);
+        // Match if any significant word (3+ chars) appears in model text
+        for (const word of words) {
+          if (word.length >= 3 && modelLower.includes(word)) {
+            matches.push(term);
+            break;
+          }
+        }
+      }
+      return matches;
+    };
+
     const scoredModels = allModels.map(model => {
       let score = 0;
-      let rationaleParts = [];
+      let maxScore = 0;
+      const rationaleParts: string[] = [];
 
-      // +3 if grade bands overlap
+      // Grade match (30 points possible)
+      maxScore += 30;
       const modelGrades = model.grades.toLowerCase();
-      const hasGradeOverlap = context.gradeBands?.some(g => modelGrades.includes(g.toLowerCase()));
-      if (hasGradeOverlap) {
-        score += 3;
-        rationaleParts.push("Matches grade levels");
+      const gradeMatches = context.gradeBands?.filter(g => {
+        const gradeLower = g.toLowerCase();
+        // Match common grade formats: "9-12", "K-5", "6-8", "high", "middle", "elementary"
+        return modelGrades.includes(gradeLower) || 
+               modelGrades.includes(gradeLower.replace("-", " ")) ||
+               (gradeLower.includes("9") && modelGrades.includes("high")) ||
+               (gradeLower.includes("6") && modelGrades.includes("middle")) ||
+               (gradeLower.includes("k") && modelGrades.includes("elementary"));
+      }) || [];
+      if (gradeMatches.length > 0) {
+        score += 30;
+        rationaleParts.push(`Serves ${gradeMatches.join(", ")} grades`);
       }
 
-      // +2 for each desired outcome keyword match
-      context.desiredOutcomes?.forEach(outcome => {
-        if (model.outcomeTypes.toLowerCase().includes(outcome.toLowerCase())) {
-          score += 2;
-          rationaleParts.push(`Supports outcome: ${outcome}`);
-        }
-      });
+      // Outcome alignment (35 points possible)
+      maxScore += 35;
+      const allModelText = `${model.outcomeTypes} ${model.description} ${model.keyPractices}`.toLowerCase();
+      const outcomeMatches = fuzzyMatch(context.desiredOutcomes || [], allModelText);
+      if (outcomeMatches.length > 0) {
+        const outcomeScore = Math.min(35, outcomeMatches.length * 12);
+        score += outcomeScore;
+        rationaleParts.push(`Aligns with: ${outcomeMatches.slice(0, 2).join(", ")}`);
+      }
 
-      // +1 for key practices
-      context.keyPractices?.forEach(practice => {
-        if (model.keyPractices.toLowerCase().includes(practice.toLowerCase())) {
-          score += 1;
-          rationaleParts.push(`Aligns with practice: ${practice}`);
-        }
-      });
-      
+      // Practice alignment (35 points possible)
+      maxScore += 35;
+      const practiceMatches = fuzzyMatch(context.keyPractices || [], allModelText);
+      if (practiceMatches.length > 0) {
+        const practiceScore = Math.min(35, practiceMatches.length * 12);
+        score += practiceScore;
+        rationaleParts.push(`Supports ${practiceMatches.slice(0, 2).join(", ")}`);
+      }
+
+      // Return raw score (not percentage yet)
       return {
         sessionId,
         modelId: model.id,
-        score,
-        rationale: rationaleParts.join(". ")
+        rawScore: score,
+        matchCount: rationaleParts.length,
+        rationale: rationaleParts.length > 0 ? rationaleParts.join(". ") : "General match based on school type"
       };
     });
 
-    // Sort and save top 10
-    scoredModels.sort((a, b) => b.score - a.score);
-    const topRecs = scoredModels.slice(0, 10);
+    // Sort by raw score
+    scoredModels.sort((a, b) => b.rawScore - a.rawScore);
     
-    await storage.saveRecommendations(topRecs);
+    // Take top 10 and normalize to percentages
+    const topRecs = scoredModels.slice(0, 10);
+    const bestScore = topRecs.length > 0 ? topRecs[0].rawScore : 0;
+    
+    // Normalize: best match = 100% (if it matched anything), others relative
+    // If best score is 0 (no matches), all get 0%
+    const normalizedRecs = topRecs.map(rec => {
+      let finalScore = 0;
+      if (bestScore > 0 && rec.matchCount > 0) {
+        // Normalize to 100% for best match
+        finalScore = Math.round((rec.rawScore / bestScore) * 100);
+      }
+      return {
+        sessionId: rec.sessionId,
+        modelId: rec.modelId,
+        score: finalScore,
+        rationale: rec.rationale
+      };
+    });
+    
+    await storage.saveRecommendations(normalizedRecs);
   }
 
   // === ADMIN CONFIG ===
