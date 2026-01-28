@@ -94,4 +94,5 @@ export type SchoolContextState = {
   implementationSupportsNeeded: string[];
   constraints: string[];
   notes: string | null;
+  isReadyForRecommendation?: boolean;
 };

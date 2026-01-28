@@ -21,16 +21,19 @@ export default function Home() {
   );
   
   const { data: comparison } = useComparison(sessionId);
-  const [activeTab, setActiveTab] = useState("recommendations");
+  const [activeTab, setActiveTab] = useState("context");
 
-  // Auto-switch tabs when data becomes available
+  // Auto-switch tabs based on workflow state
   useEffect(() => {
     if (comparison?.selection && comparison.models.length > 0) {
       setActiveTab("comparison");
     } else if (recommendations.length > 0) {
       setActiveTab("recommendations");
+    } else if (context && (context.gradeBands?.length || context.desiredOutcomes?.length)) {
+      // Stay on context while gathering info
+      setActiveTab("context");
     }
-  }, [comparison?.selection, recommendations.length]);
+  }, [comparison?.selection, recommendations.length, context?.gradeBands?.length, context?.desiredOutcomes?.length]);
 
   if (isSessionLoading || !sessionId) {
     return (
@@ -108,7 +111,13 @@ export default function Home() {
             <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
               
               <TabsContent value="context" className="mt-0 focus-visible:outline-none">
-                {context && <ContextSummary context={context} />}
+                {context && (
+                  <ContextSummary 
+                    context={context} 
+                    sessionId={sessionId}
+                    onRecommendationsGenerated={() => setActiveTab("recommendations")}
+                  />
+                )}
               </TabsContent>
 
               <TabsContent value="recommendations" className="mt-0 focus-visible:outline-none">

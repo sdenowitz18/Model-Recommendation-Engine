@@ -137,6 +137,41 @@ export async function registerRoutes(
     }
   });
 
+  // === UPDATE CONTEXT DIRECTLY ===
+  app.post("/api/sessions/:sessionId/context", async (req, res) => {
+    try {
+      const sessionIdStr = req.params.sessionId as string;
+      const session = await storage.getSession(sessionIdStr);
+      if (!session) return res.status(404).json({ message: "Session not found" });
+      
+      const patch = req.body;
+      await storage.updateSchoolContext(session.id, patch);
+      const updated = await storage.getSchoolContext(session.id);
+      res.json(updated);
+    } catch (err) {
+      console.error("Update context error:", err);
+      res.status(500).json({ message: "Failed to update context" });
+    }
+  });
+
+  // === GENERATE RECOMMENDATIONS MANUALLY ===
+  app.post("/api/sessions/:sessionId/generate-recommendations", async (req, res) => {
+    try {
+      const sessionIdStr = req.params.sessionId as string;
+      const session = await storage.getSession(sessionIdStr);
+      if (!session) return res.status(404).json({ message: "Session not found" });
+      
+      // Mark context as ready and generate recommendations
+      await storage.updateSchoolContext(session.id, { isReadyForRecommendation: true });
+      await generateRecommendations(session.id);
+      
+      res.json({ message: "Recommendations generated" });
+    } catch (err) {
+      console.error("Generate recommendations error:", err);
+      res.status(500).json({ message: "Failed to generate recommendations" });
+    }
+  });
+
   // === CHAT ADVISOR ===
   app.post(api.chat.advisor.path, async (req, res) => {
     try {
@@ -203,13 +238,8 @@ The JSON object must have these exact keys:
         await storage.updateSchoolContext(session.id, parsedResponse.context_patch);
       }
       
-      if (parsedResponse.should_recommend) {
-        await storage.markContextReady(session.id);
-        // Trigger recommendation engine? 
-        // We can do it here or let the client call the recommend endpoint.
-        // Let's do it here to ensure data is ready.
-        await generateRecommendations(session.id);
-      }
+      // Don't auto-generate recommendations - let user trigger manually via the button
+      // Just indicate in the response that enough context has been gathered
 
       res.json(parsedResponse);
 
@@ -236,13 +266,9 @@ The JSON object must have these exact keys:
     const session = await storage.getSession(sessionIdStr);
     if (!session) return res.status(404).json({ message: "Session not found" });
     
+    // Return existing recommendations - don't auto-generate
+    // User must click "Generate Recommendations" button to trigger generation
     const recs = await storage.getRecommendations(session.id);
-    // If no recs exist, try to generate them (fallback)
-    if (recs.length === 0) {
-      await generateRecommendations(session.id);
-      const newRecs = await storage.getRecommendations(session.id);
-      return res.json(newRecs);
-    }
     res.json(recs);
   });
 
