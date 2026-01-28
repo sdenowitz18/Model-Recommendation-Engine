@@ -69,6 +69,10 @@ Preferred communication style: Simple, everyday language.
 ### Data Import
 - **xlsx**: Excel file parsing for importing school models from spreadsheets
 - **multer**: File upload handling for the admin import endpoint
+- **Airtable API**: Direct sync from Airtable table for model management
+  - Requires `AIRTABLE_API_TOKEN` secret
+  - Uses `AIRTABLE_BASE_ID` and `AIRTABLE_TABLE_ID` environment variables
+  - Endpoint: POST `/api/admin/refresh-from-airtable`
 
 ### Client Libraries
 - **TanStack React Query**: Async state management and caching
