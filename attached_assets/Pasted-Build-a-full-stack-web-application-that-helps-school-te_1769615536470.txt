@@ -1,0 +1,161 @@
+Build a full-stack web application that helps school teams identify, compare, and reason through best-fit school design models.
+
+TECH STACK
+- Framework: Next.js (TypeScript, App Router)
+- Database: SQLite using Prisma
+- LLM: OpenAI API (via OPENAI_API_KEY environment variable)
+- Data source (MVP): Excel file in the repo named `Transcend_Models_Comparison.xlsx`
+- Excel sheet name: `Transcend Models`
+
+EXCEL COLUMNS
+- Model Name
+- Grades
+- Description
+- Model Link
+- Outcome Types
+- Key Practices
+- Implementation Supports
+
+On first run, read the Excel file and seed the database. Upsert models by Model Name.
+
+DATABASE SCHEMA (Prisma)
+Model:
+- id (string)
+- name (string)
+- grades (string)
+- description (text)
+- link (string)
+- outcomeTypes (text)
+- keyPractices (text)
+- implementationSupports (text)
+
+Session:
+- id (string)
+- createdAt
+- updatedAt
+
+SchoolContext:
+- id
+- sessionId
+- vision (text)
+- desiredOutcomes (json/text)
+- gradeBands (json/text)
+- keyPractices (json/text)
+- implementationSupportsNeeded (json/text)
+- constraints (json/text)
+- notes (text)
+
+Recommendation:
+- id
+- sessionId
+- modelId
+- score (float)
+- rationale (text)
+
+ComparisonSelection:
+- id
+- sessionId
+- modelIds (json/text)
+
+APPLICATION BEHAVIOR
+
+UI:
+- Two-pane layout
+  - Left: chatbot interface
+  - Right: model recommendations, details, and comparison
+- Right pane states:
+  1) Empty (“Answer a few questions to see recommendations”)
+  2) Recommended model cards
+  3) Comparison view (side-by-side)
+
+SESSION:
+- Create a session on first load and store sessionId client-side.
+
+CHATBOT ROLE (CORE LOGIC)
+
+The chatbot is a guided school design advisor.
+Its responsibilities:
+1) Collect the user’s school design vision and context.
+2) Decide when enough context exists to recommend models.
+3) Support comparison and trade-off reasoning once models are selected.
+
+The chatbot MUST follow these phases:
+
+PHASE 1 — Context Discovery  
+Ask one focused question at a time to collect:
+- Desired outcomes
+- Grade bands
+- Key practices or structures
+- Implementation supports needed
+- Constraints (budget sensitivity, staffing capacity, credentialing tolerance, timeline)
+
+Periodically summarize what has been learned in 3–6 bullets.
+
+PHASE 2 — Readiness Check  
+Determine if there is enough context to recommend models.
+Minimum required:
+- At least one desired outcome
+- At least one grade band
+- At least one of: key practices, constraints, or implementation supports
+
+If not ready, ask the single most important missing question.
+
+PHASE 3 — Recommendations  
+Recommend a limited set of models (not exhaustive).
+For each recommended model:
+- 2–3 reasons it fits the user’s context
+- 1 watch-out or assumption
+
+PHASE 4 — Comparison & Trade-offs  
+When the user selects multiple models:
+- Compare them using the user’s stated priorities
+- Focus on meaningful differences (outcomes alignment, implementation complexity, supports, constraints)
+- Answer questions like “Why choose X over Y?”
+
+CHAT API CONTRACT
+
+The chat endpoint MUST return valid JSON only:
+
+{
+  "assistant_message": string,
+  "context_patch": object,
+  "next_question": string | null,
+  "should_recommend": boolean,
+  "should_compare": boolean
+}
+
+Rules:
+- context_patch includes only fields the user explicitly provided.
+- Ask exactly one next_question unless should_recommend is true.
+- Never invent model attributes.
+
+RECOMMENDATION ENGINE (SERVER-SIDE)
+
+For each model:
+- +3 if grade bands overlap
+- +2 for each desired outcome keyword match in outcomeTypes
+- +1 for each key practice match
+- +1 for each implementation support match
+
+Return:
+- Top 5 models as “Recommended”
+- Next 5 as “Other Options”
+- Store score + rationale.
+
+COMPARISON ANALYSIS
+
+When comparing models:
+- Use stored SchoolContext + selected models
+- Return trade-offs, risks, and “best fit if…” guidance
+- Prioritize clarity over completeness
+
+ROUTES / PAGES
+- / → main two-pane experience
+- /models/[id] → model detail page with full information and link out
+
+IMPLEMENTATION NOTES
+- Use Next.js API routes for chat, recommendations, and comparisons.
+- Use Prisma for DB access.
+- Use the xlsx npm package to read the Excel file.
+- Provide a README with setup steps:
+  install, prisma migrate, seed, run dev.
