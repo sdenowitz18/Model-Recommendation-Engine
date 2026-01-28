@@ -37,6 +37,7 @@ Preferred communication style: Simple, everyday language.
   - `recommendations` - AI-generated model recommendations with scores
   - `comparison_selections` - User-selected models for comparison
   - `conversations` / `messages` - Chat history storage
+  - `advisor_config` - Stores the custom system prompt for the AI advisor
 
 ### AI Integration
 - **Provider**: OpenAI API (configured via environment variables)
@@ -45,6 +46,7 @@ Preferred communication style: Simple, everyday language.
   - Voice chat capabilities (audio transcription and synthesis)
   - Image generation support
 - **Client Location**: `server/replit_integrations/` contains modular AI integration utilities
+- **Custom Instructions**: Admin can configure advisor behavior at `/admin/settings`. The custom system prompt is stored in the database and injected with session context at runtime. A default prompt is used if no custom prompt is set.
 
 ### Key Design Patterns
 - **Shared Types**: `shared/` directory contains schemas and route definitions used by both client and server
