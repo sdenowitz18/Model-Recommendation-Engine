@@ -163,3 +163,24 @@ export function useComparison(sessionId: string | null) {
     enabled: !!sessionId,
   });
 }
+
+// === CLEAR SESSION ===
+
+export function useClearSession() {
+  const queryClient = useQueryClient();
+  
+  return useMutation({
+    mutationFn: async (sessionId: string) => {
+      const url = buildUrl(api.sessions.clear.path, { sessionId });
+      const res = await fetch(url, { method: "POST", credentials: "include" });
+      if (!res.ok) throw new Error("Failed to clear session");
+      return res.json();
+    },
+    onSuccess: (_, sessionId) => {
+      // Invalidate all related queries
+      queryClient.invalidateQueries({ queryKey: [api.sessions.getContext.path, sessionId] });
+      queryClient.invalidateQueries({ queryKey: [api.models.recommend.path, sessionId] });
+      queryClient.invalidateQueries({ queryKey: [api.comparison.get.path, sessionId] });
+    },
+  });
+}

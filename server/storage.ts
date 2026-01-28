@@ -29,6 +29,9 @@ export interface IStorage {
   // Comparison
   saveComparisonSelection(sessionId: number, modelIds: number[]): Promise<ComparisonSelection>;
   getComparisonSelection(sessionId: number): Promise<ComparisonSelection | undefined>;
+  
+  // Clear session
+  clearSessionData(sessionId: number): Promise<void>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -149,6 +152,26 @@ export class DatabaseStorage implements IStorage {
   async getComparisonSelection(sessionId: number): Promise<ComparisonSelection | undefined> {
     const [selection] = await db.select().from(comparisonSelections).where(eq(comparisonSelections.sessionId, sessionId));
     return selection;
+  }
+
+  async clearSessionData(sessionId: number): Promise<void> {
+    // Clear recommendations
+    await db.delete(recommendations).where(eq(recommendations.sessionId, sessionId));
+    // Clear comparison selections
+    await db.delete(comparisonSelections).where(eq(comparisonSelections.sessionId, sessionId));
+    // Reset school context to empty
+    await db.update(schoolContexts)
+      .set({
+        vision: null,
+        desiredOutcomes: [],
+        gradeBands: [],
+        keyPractices: [],
+        implementationSupportsNeeded: [],
+        constraints: [],
+        notes: null,
+        isReadyForRecommendation: false
+      })
+      .where(eq(schoolContexts.sessionId, sessionId));
   }
 }
 

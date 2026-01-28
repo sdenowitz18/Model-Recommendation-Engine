@@ -22,9 +22,9 @@
   --primary: 165 63% 40%;
   --primary-foreground: 0 0% 100%;
 
-  /* Secondary: Transcend Coral/Red */
-  --secondary: 3 69% 56%;
-  --secondary-foreground: 0 0% 100%;
+  /* Secondary: Neutral warm gray (clean, not red) */
+  --secondary: 40 10% 94%;
+  --secondary-foreground: 210 11% 25%;
 
   /* Muted: Warm Grays */
   --muted: 40 18% 96%;

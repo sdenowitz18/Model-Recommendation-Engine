@@ -49,6 +49,14 @@ export const api = {
         200: z.custom<typeof schoolContexts.$inferSelect>(),
         404: errorSchemas.notFound,
       },
+    },
+    clear: {
+      method: 'POST' as const,
+      path: '/api/sessions/:sessionId/clear',
+      responses: {
+        200: z.object({ message: z.string() }),
+        404: errorSchemas.notFound,
+      },
     }
   },
   chat: {

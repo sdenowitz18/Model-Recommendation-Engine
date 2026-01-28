@@ -5,7 +5,7 @@ import { ComparisonTable } from "@/components/ComparisonTable";
 import { ContextSummary } from "@/components/ContextSummary";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Loader2, LayoutGrid, SplitSquareHorizontal, FileText, Upload } from "lucide-react";
+import { Loader2, LayoutGrid, SplitSquareHorizontal, FileText, Upload, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Link } from "wouter";
 import { useState, useEffect } from "react";
@@ -54,8 +54,18 @@ export default function Home() {
         
         <div className="p-6 border-b bg-white flex items-center justify-between gap-4">
           <div className="flex items-center gap-4">
+            {/* Transcend Logo/Branding */}
+            <div className="flex items-center gap-3 pr-4 border-r border-border">
+              <div className="w-10 h-10 rounded-xl bg-primary flex items-center justify-center shadow-md">
+                <Sparkles className="w-5 h-5 text-white" />
+              </div>
+              <div className="flex flex-col">
+                <span className="text-lg font-display font-bold text-primary tracking-tight">Transcend</span>
+                <span className="text-[10px] text-muted-foreground uppercase tracking-widest -mt-0.5">Model Advisor</span>
+              </div>
+            </div>
             <div>
-              <h1 className="text-2xl font-display font-bold text-foreground">School Design Dashboard</h1>
+              <h1 className="text-xl font-display font-bold text-foreground">School Design Dashboard</h1>
               <p className="text-sm text-muted-foreground">
                 {context?.isReadyForRecommendation 
                   ? "Here are the best models based on your vision."
@@ -85,7 +95,7 @@ export default function Home() {
           </Tabs>
         </div>
 
-        <ScrollArea className="flex-1 bg-secondary/20 p-6">
+        <ScrollArea className="flex-1 bg-muted/40 p-6">
           <div className="max-w-6xl mx-auto space-y-8 pb-20">
             <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
               

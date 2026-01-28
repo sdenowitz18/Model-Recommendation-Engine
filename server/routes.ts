@@ -84,6 +84,21 @@ export async function registerRoutes(
     res.json(context);
   });
 
+  // Clear session (start fresh)
+  app.post(api.sessions.clear.path, async (req, res) => {
+    try {
+      const sessionIdStr = req.params.sessionId as string;
+      const session = await storage.getSession(sessionIdStr);
+      if (!session) return res.status(404).json({ message: "Session not found" });
+      
+      await storage.clearSessionData(session.id);
+      res.json({ message: "Session cleared successfully" });
+    } catch (err) {
+      console.error("Clear session error:", err);
+      res.status(500).json({ message: "Failed to clear session" });
+    }
+  });
+
   // === CHAT ADVISOR ===
   app.post(api.chat.advisor.path, async (req, res) => {
     try {
@@ -96,20 +111,43 @@ export async function registerRoutes(
 
       // Construct system prompt with current context state
       const systemPrompt = `
-        You are a guided school design advisor helping a school team identify best-fit design models.
+        You are a guided school design advisor helping a school team identify best-fit design models from Transcend Education's Innovative Model Exchange.
         
         CURRENT CONTEXT:
         - Vision: ${context.vision || "Not yet provided"}
-        - Desired Outcomes: ${context.desiredOutcomes?.join(", ") || "None"}
         - Grade Bands: ${context.gradeBands?.join(", ") || "None"}
-        - Key Practices: ${context.keyPractices?.join(", ") || "None"}
-        - Support Needed: ${context.implementationSupportsNeeded?.join(", ") || "None"}
+        - Desired Outcomes (Aims for Learners): ${context.desiredOutcomes?.join(", ") || "None"}
+        - Key Practices (Student Experience): ${context.keyPractices?.join(", ") || "None"}
+        - Implementation Supports Needed: ${context.implementationSupportsNeeded?.join(", ") || "None"}
         - Constraints: ${context.constraints?.join(", ") || "None"}
         
+        STEP-BY-STEP QUESTION ORDER (follow this sequence):
+        
+        STEP 1 - SCHOOL INFO (ask first if not provided):
+        - Where is the school located?
+        - What grades does the school serve?
+        - Is this an existing school or a new design?
+        
+        STEP 2 - AIMS FOR LEARNERS (ask second):
+        - What outcomes do you want for students? (e.g., critical thinking, collaboration, creativity)
+        - What Transcend Leaps are you prioritizing? (e.g., Whole-Child Focus, Equity-Driven, Learner-Led)
+        - What skills and competencies matter most?
+        
+        STEP 3 - STUDENT EXPERIENCE (ask third):
+        - What should learning look like day-to-day for students?
+        - What teaching approaches or practices are important? (e.g., project-based, personalized, inquiry-based)
+        - How should students spend their time?
+        
+        STEP 4 - IMPLEMENTATION SUPPORTS (ask fourth):
+        - What kind of support does your team need to implement a new model?
+        - What are your constraints? (budget, timeline, staffing, facilities)
+        - What resources are already in place?
+        
         YOUR ROLE:
-        1. Collect the user's school design vision and context (outcomes, grades, practices, supports, constraints).
-        2. Decide when enough context exists to recommend models (need at least one outcome, one grade band, and one other factor).
-        3. Respond in JSON format ONLY.
+        1. Guide the user through these steps IN ORDER. Don't skip ahead.
+        2. If they provide information out of order, acknowledge it but gently return to the current step.
+        3. When you have enough from each step (at minimum: grades, 1+ outcomes, 1+ practice, 1+ support need), you can recommend.
+        4. Respond in JSON format ONLY.
         
         JSON SCHEMA:
         {
@@ -130,9 +168,11 @@ export async function registerRoutes(
         
         RULES:
         - Ask ONE focused question at a time.
+        - Follow the step order above. Move to the next step only after the current one has meaningful input.
         - If the user provides information, extract it into 'context_patch'.
         - If 'should_recommend' is true, 'next_question' should be null.
-        - Be helpful, professional, and encouraging.
+        - Be warm, helpful, professional, and encouraging.
+        - Acknowledge what they share before asking the next question.
       `;
 
       const completion = await openai.chat.completions.create({

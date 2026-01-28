@@ -1,10 +1,10 @@
 import { useState, useEffect, useRef } from "react";
-import { useChatAdvisor, useSessionContext } from "@/hooks/use-advisor";
+import { useChatAdvisor, useSessionContext, useClearSession } from "@/hooks/use-advisor";
 import { Button } from "@/components/ui/button";
 import { TextareaAutosize } from "@/components/ui/textarea-autosize";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { Send, Sparkles, User, Loader2 } from "lucide-react";
+import { Send, Sparkles, User, Loader2, RotateCcw } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import ReactMarkdown from "react-markdown";
 import { cn } from "@/lib/utils";
@@ -25,7 +25,7 @@ export function ChatInterface({ sessionId }: ChatInterfaceProps) {
     {
       id: "intro",
       role: "assistant",
-      content: "Hello! I'm your School Design Advisor. I can help you identify the best-fit design models for your school context. To get started, tell me a bit about your vision for the school.",
+      content: "Hello! I'm your School Design Advisor from Transcend Education. I'll help you find the best-fit design models for your school by learning about your context step by step.\n\nLet's start with some basics: **Where is your school located, and what grades does it serve?**",
       timestamp: new Date(),
     },
   ]);
@@ -33,7 +33,24 @@ export function ChatInterface({ sessionId }: ChatInterfaceProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   
   const chatMutation = useChatAdvisor();
-  const { data: context } = useSessionContext(sessionId);
+  const clearSession = useClearSession();
+  const { data: context, refetch: refetchContext } = useSessionContext(sessionId);
+
+  const handleClearConversation = () => {
+    clearSession.mutate(sessionId, {
+      onSuccess: () => {
+        setMessages([
+          {
+            id: "intro",
+            role: "assistant",
+            content: "Hello! I'm your School Design Advisor from Transcend Education. I'll help you find the best-fit design models for your school by learning about your context step by step.\n\nLet's start with some basics: **Where is your school located, and what grades does it serve?**",
+            timestamp: new Date(),
+          },
+        ]);
+        refetchContext();
+      },
+    });
+  };
 
   // Auto-scroll to bottom
   useEffect(() => {
@@ -82,15 +99,34 @@ export function ChatInterface({ sessionId }: ChatInterfaceProps) {
     <div className="flex flex-col h-full bg-white border-r border-border shadow-sm relative z-10">
       {/* Header */}
       <div className="p-4 border-b border-border bg-white/50 backdrop-blur-sm sticky top-0 z-10">
-        <h2 className="text-xl font-bold font-display text-primary flex items-center gap-2">
-          <Sparkles className="w-5 h-5 text-accent-foreground" />
-          Design Advisor
-        </h2>
-        <p className="text-xs text-muted-foreground mt-1">
-          {context?.isReadyForRecommendation 
-            ? "Context established. Recommendations ready." 
-            : "Gathering context for recommendations..."}
-        </p>
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-xl font-bold font-display text-primary flex items-center gap-2">
+              <Sparkles className="w-5 h-5 text-accent-foreground" />
+              Design Advisor
+            </h2>
+            <p className="text-xs text-muted-foreground mt-1">
+              {context?.isReadyForRecommendation 
+                ? "Context established. Recommendations ready." 
+                : "Gathering context for recommendations..."}
+            </p>
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={handleClearConversation}
+            disabled={clearSession.isPending}
+            className="text-muted-foreground hover:text-foreground"
+            data-testid="button-clear-conversation"
+          >
+            {clearSession.isPending ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <RotateCcw className="w-4 h-4" />
+            )}
+            <span className="ml-1.5 text-xs">Start Fresh</span>
+          </Button>
+        </div>
       </div>
 
       {/* Messages */}

@@ -80,7 +80,7 @@ export default function ModelDetail() {
             {model.imageUrl ? (
               <img src={model.imageUrl} alt={model.name} className="w-full h-auto object-cover" />
             ) : (
-              <div className="w-full h-80 bg-secondary/30 flex items-center justify-center">
+              <div className="w-full h-80 bg-muted flex items-center justify-center">
                 <School className="w-20 h-20 opacity-20" />
               </div>
             )}
