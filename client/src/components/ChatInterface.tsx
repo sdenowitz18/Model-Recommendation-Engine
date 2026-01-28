@@ -89,6 +89,16 @@ export function ChatInterface({ sessionId }: ChatInterfaceProps) {
           };
           setMessages((prev) => [...prev, assistantMsg]);
         },
+        onError: (error) => {
+          console.error("Chat error:", error);
+          const errorMsg: Message = {
+            id: (Date.now() + 1).toString(),
+            role: "assistant",
+            content: "I'm sorry, I encountered an issue processing your message. Please try again.",
+            timestamp: new Date(),
+          };
+          setMessages((prev) => [...prev, errorMsg]);
+        },
       }
     );
   };
