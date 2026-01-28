@@ -198,6 +198,32 @@ export async function registerRoutes(
       const context = await storage.getSchoolContext(session.id);
       if (!context) return res.status(404).json({ message: "Context not found" });
 
+      // Get recommendations and comparison selections
+      const recommendations = await storage.getRecommendations(session.id);
+      const comparisonData = await storage.getComparisonSelection(session.id);
+      
+      // Build comparison models info
+      let comparisonModelsInfo = "None selected";
+      if (comparisonData && comparisonData.modelIds && comparisonData.modelIds.length > 0) {
+        const comparisonModels = recommendations
+          .filter(r => comparisonData.modelIds.includes(r.modelId))
+          .map(r => r.model);
+        
+        if (comparisonModels.length > 0) {
+          comparisonModelsInfo = comparisonModels.map(m => 
+            `\n  - ${m.name}: ${m.description} (Grades: ${m.grades}, Outcomes: ${m.outcomeTypes}, Practices: ${m.keyPractices}, Supports: ${m.implementationSupports})`
+          ).join("");
+        }
+      }
+
+      // Build recommended models info
+      let recommendedModelsInfo = "None yet";
+      if (recommendations.length > 0) {
+        recommendedModelsInfo = recommendations.map(r => 
+          `\n  - ${r.model.name} (Score: ${r.score}%): ${r.rationale}`
+        ).join("");
+      }
+
       // Get the custom system prompt from config, or use default
       const config = await storage.getAdvisorConfig();
       const basePrompt = config?.systemPrompt || getDefaultSystemPrompt();
@@ -213,6 +239,12 @@ ${basePrompt}
 - Key Practices (Student Experience): ${context.keyPractices?.join(", ") || "None"}
 - Implementation Supports Needed: ${context.implementationSupportsNeeded?.join(", ") || "None"}
 - Constraints: ${context.constraints?.join(", ") || "None"}
+
+=== RECOMMENDED MODELS ===
+${recommendedModelsInfo}
+
+=== MODELS SELECTED FOR COMPARISON ===
+${comparisonModelsInfo}
 
 === RESPONSE FORMAT ===
 You MUST respond in valid JSON format ONLY. Do not include any text outside the JSON object.
