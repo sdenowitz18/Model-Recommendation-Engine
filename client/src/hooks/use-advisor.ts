@@ -181,7 +181,11 @@ export function useClearSession() {
       return res.json();
     },
     onSuccess: (_, sessionId) => {
-      // Invalidate all related queries
+      // Clear cached data (setQueryData) AND invalidate to refetch
+      queryClient.setQueryData([api.models.recommend.path, sessionId], []);
+      queryClient.setQueryData([api.comparison.get.path, sessionId], { selection: null, models: [] });
+      
+      // Invalidate context to refetch the reset state
       queryClient.invalidateQueries({ queryKey: [api.sessions.getContext.path, sessionId] });
       queryClient.invalidateQueries({ queryKey: [api.models.recommend.path, sessionId] });
       queryClient.invalidateQueries({ queryKey: [api.comparison.get.path, sessionId] });
