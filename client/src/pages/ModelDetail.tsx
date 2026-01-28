@@ -3,7 +3,7 @@ import { Link, useRoute } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ArrowLeft, ExternalLink, School, BookOpen, Users, Cog, CheckCircle } from "lucide-react";
+import { ArrowLeft, ExternalLink, School, BookOpen, Users, Cog, CheckCircle, Settings } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 

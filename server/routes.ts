@@ -33,7 +33,7 @@ export async function registerRoutes(
       const data = xlsx.utils.sheet_to_json(worksheet);
       
       const importedModels = [];
-      for (const row: any of data) {
+      for (const row of data as any[]) {
         const modelData = {
           name: row["Model Name"],
           grades: row["Grades"],
@@ -76,7 +76,7 @@ export async function registerRoutes(
   });
 
   app.get(api.sessions.getContext.path, async (req, res) => {
-    const sessionIdStr = req.params.sessionId;
+    const sessionIdStr = req.params.sessionId as string;
     const session = await storage.getSession(sessionIdStr);
     if (!session) return res.status(404).json({ message: "Session not found" });
     
@@ -183,7 +183,7 @@ export async function registerRoutes(
   });
 
   app.post(api.models.recommend.path, async (req, res) => {
-    const sessionIdStr = req.params.sessionId;
+    const sessionIdStr = req.params.sessionId as string;
     const session = await storage.getSession(sessionIdStr);
     if (!session) return res.status(404).json({ message: "Session not found" });
     
@@ -199,7 +199,7 @@ export async function registerRoutes(
 
   // === COMPARISON ===
   app.post(api.comparison.save.path, async (req, res) => {
-    const sessionIdStr = req.params.sessionId;
+    const sessionIdStr = req.params.sessionId as string;
     const session = await storage.getSession(sessionIdStr);
     if (!session) return res.status(404).json({ message: "Session not found" });
     
@@ -209,7 +209,7 @@ export async function registerRoutes(
   });
 
   app.get(api.comparison.get.path, async (req, res) => {
-    const sessionIdStr = req.params.sessionId;
+    const sessionIdStr = req.params.sessionId as string;
     const session = await storage.getSession(sessionIdStr);
     if (!session) return res.status(404).json({ message: "Session not found" });
     
@@ -273,59 +273,5 @@ export async function registerRoutes(
     await storage.saveRecommendations(topRecs);
   }
 
-  // === SEED DATA ===
-  await seedData();
-
   return httpServer;
-}
-
-async function seedData() {
-  const models = await storage.getAllModels();
-  if (models.length === 0) {
-    console.log("Seeding models...");
-    
-    await storage.createModel({
-      name: "Project-Based Learning Academy",
-      grades: "K-12",
-      description: "A model focused on interdisciplinary projects that solve real-world problems.",
-      link: "https://example.com/pbl",
-      outcomeTypes: "Critical Thinking, Collaboration, Real-world Application",
-      keyPractices: "Interdisciplinary Projects, Public Exhibitions, Student Autonomy",
-      implementationSupports: "Teacher PD, Flexible Scheduling, Community Partnerships",
-      imageUrl: "https://images.unsplash.com/photo-1509062522246-3755977927d7?auto=format&fit=crop&q=80&w=1000"
-    });
-
-    await storage.createModel({
-      name: "Montessori Modern",
-      grades: "K-8",
-      description: "Student-led learning with specialized materials and mixed-age classrooms.",
-      link: "https://example.com/montessori",
-      outcomeTypes: "Independence, Deep Focus, Social Development",
-      keyPractices: "Mixed-age cohorts, Self-directed work blocks, Prepared environment",
-      implementationSupports: "Specialized Materials, Teacher Certification",
-      imageUrl: "https://images.unsplash.com/photo-1503676260728-1c00da094a0b?auto=format&fit=crop&q=80&w=1000"
-    });
-    
-    await storage.createModel({
-      name: "STEM Mastery High",
-      grades: "9-12",
-      description: "Rigorous focus on Science, Technology, Engineering, and Math with industry integration.",
-      link: "https://example.com/stem",
-      outcomeTypes: "STEM Proficiency, Career Readiness, Analytical Skills",
-      keyPractices: "Lab-based learning, Industry internships, Advanced coursework",
-      implementationSupports: "Lab Equipment, Industry Partners",
-      imageUrl: "https://images.unsplash.com/photo-1581093458791-9f3c3900df4b?auto=format&fit=crop&q=80&w=1000"
-    });
-
-    await storage.createModel({
-      name: "Community Schools Model",
-      grades: "K-12",
-      description: "Schools as hubs for community services, focusing on holistic student support.",
-      link: "https://example.com/community",
-      outcomeTypes: "Whole Child Health, Family Engagement, Academic Growth",
-      keyPractices: "Wrap-around services, Extended learning time, Family resource centers",
-      implementationSupports: "Community Coordinators, Health Partnerships",
-      imageUrl: "https://images.unsplash.com/photo-1577896333243-596652414d71?auto=format&fit=crop&q=80&w=1000"
-    });
-  }
 }
