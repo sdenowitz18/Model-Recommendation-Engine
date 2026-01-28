@@ -5,7 +5,7 @@ import { ComparisonTable } from "@/components/ComparisonTable";
 import { ContextSummary } from "@/components/ContextSummary";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Loader2, LayoutGrid, SplitSquareHorizontal, FileText, Upload, Sparkles } from "lucide-react";
+import { Loader2, LayoutGrid, SplitSquareHorizontal, FileText, Upload, Sparkles, Settings } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Link } from "wouter";
 import { useState, useEffect } from "react";
@@ -72,12 +72,20 @@ export default function Home() {
                   : "Building your school profile..."}
               </p>
             </div>
-            <Link href="/admin/import">
-              <Button variant="outline" size="sm" data-testid="button-import-models">
-                <Upload className="w-4 h-4 mr-2" />
-                Import Models
-              </Button>
-            </Link>
+            <div className="flex items-center gap-2">
+              <Link href="/admin/settings">
+                <Button variant="outline" size="sm" data-testid="button-settings">
+                  <Settings className="w-4 h-4 mr-2" />
+                  Settings
+                </Button>
+              </Link>
+              <Link href="/admin/import">
+                <Button variant="outline" size="sm" data-testid="button-import-models">
+                  <Upload className="w-4 h-4 mr-2" />
+                  Import
+                </Button>
+              </Link>
+            </div>
           </div>
 
           <Tabs value={activeTab} onValueChange={setActiveTab} className="w-[400px]">

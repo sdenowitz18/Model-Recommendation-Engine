@@ -7,6 +7,7 @@ import NotFound from "@/pages/not-found";
 import Home from "@/pages/Home";
 import ModelDetail from "@/pages/ModelDetail";
 import AdminImport from "@/pages/admin-import";
+import AdminSettings from "@/pages/AdminSettings";
 
 function Router() {
   return (
@@ -14,6 +15,7 @@ function Router() {
       <Route path="/" component={Home} />
       <Route path="/models/:id" component={ModelDetail} />
       <Route path="/admin/import" component={AdminImport} />
+      <Route path="/admin/settings" component={AdminSettings} />
       <Route component={NotFound} />
     </Switch>
   );

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { models, schoolContexts, recommendations, comparisonSelections } from './schema';
+import { models, schoolContexts, recommendations, comparisonSelections, advisorConfig } from './schema';
 
 export const errorSchemas = {
   validation: z.object({
@@ -120,6 +120,26 @@ export const api = {
           selection: z.custom<typeof comparisonSelections.$inferSelect>().nullable(),
           models: z.array(z.custom<typeof models.$inferSelect>()),
         }),
+      },
+    },
+  },
+  admin: {
+    getConfig: {
+      method: 'GET' as const,
+      path: '/api/admin/config',
+      responses: {
+        200: z.object({
+          systemPrompt: z.string(),
+          updatedAt: z.string().nullable(),
+        }),
+      },
+    },
+    saveConfig: {
+      method: 'POST' as const,
+      path: '/api/admin/config',
+      input: z.object({ systemPrompt: z.string() }),
+      responses: {
+        200: z.custom<typeof advisorConfig.$inferSelect>(),
       },
     },
   }

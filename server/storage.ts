@@ -1,9 +1,9 @@
 import { db } from "./db";
 import {
-  models, sessions, schoolContexts, recommendations, comparisonSelections,
+  models, sessions, schoolContexts, recommendations, comparisonSelections, advisorConfig,
   type Model, type InsertModel, type Session, type SchoolContext, type InsertSchoolContext,
   type Recommendation, type InsertRecommendation, type ComparisonSelection,
-  type SchoolContextState
+  type SchoolContextState, type AdvisorConfig
 } from "@shared/schema";
 import { eq, desc, inArray } from "drizzle-orm";
 
@@ -32,6 +32,10 @@ export interface IStorage {
   
   // Clear session
   clearSessionData(sessionId: number): Promise<void>;
+  
+  // Advisor config
+  getAdvisorConfig(): Promise<AdvisorConfig | undefined>;
+  saveAdvisorConfig(systemPrompt: string): Promise<AdvisorConfig>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -172,6 +176,28 @@ export class DatabaseStorage implements IStorage {
         isReadyForRecommendation: false
       })
       .where(eq(schoolContexts.sessionId, sessionId));
+  }
+
+  async getAdvisorConfig(): Promise<AdvisorConfig | undefined> {
+    const [config] = await db.select().from(advisorConfig).limit(1);
+    return config;
+  }
+
+  async saveAdvisorConfig(systemPrompt: string): Promise<AdvisorConfig> {
+    // Check if config exists
+    const existing = await this.getAdvisorConfig();
+    if (existing) {
+      const [updated] = await db.update(advisorConfig)
+        .set({ systemPrompt, updatedAt: new Date() })
+        .where(eq(advisorConfig.id, existing.id))
+        .returning();
+      return updated;
+    } else {
+      const [created] = await db.insert(advisorConfig)
+        .values({ systemPrompt })
+        .returning();
+      return created;
+    }
   }
 }
 
