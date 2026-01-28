@@ -5,11 +5,61 @@ import { api, buildUrl } from "@shared/routes";
 import { z } from "zod";
 import { openai } from "./replit_integrations/audio/client"; // Use the client from audio integration which is just generic OpenAI client
 import { insertModelSchema } from "@shared/schema";
+import multer from "multer";
+import * as xlsx from "xlsx";
+
+const upload = multer({ storage: multer.memoryStorage() });
 
 export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
+  
+  // === EXCEL IMPORT ===
+  app.post("/api/admin/import-models", upload.single("file"), async (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ message: "No file uploaded" });
+      }
+
+      const workbook = xlsx.read(req.file.buffer, { type: "buffer" });
+      const sheetName = "Transcend Models";
+      const worksheet = workbook.Sheets[sheetName];
+      
+      if (!worksheet) {
+        return res.status(400).json({ message: `Sheet "${sheetName}" not found` });
+      }
+
+      const data = xlsx.utils.sheet_to_json(worksheet);
+      
+      const importedModels = [];
+      for (const row: any of data) {
+        const modelData = {
+          name: row["Model Name"],
+          grades: row["Grades"],
+          description: row["Description"],
+          link: row["Model Link"],
+          outcomeTypes: row["Outcome Types"],
+          keyPractices: row["Key Practices"],
+          implementationSupports: row["Implementation Supports"],
+          imageUrl: row["Image URL"] || null,
+        };
+
+        // Validate and save
+        const validated = insertModelSchema.parse(modelData);
+        const saved = await storage.createModel(validated);
+        importedModels.push(saved);
+      }
+
+      res.json({ message: `Successfully imported ${importedModels.length} models`, count: importedModels.length });
+    } catch (err) {
+      console.error("Import error:", err);
+      if (err instanceof z.ZodError) {
+        return res.status(400).json({ message: "Invalid data format in Excel", details: err.errors });
+      }
+      res.status(500).json({ message: "Internal server error during import" });
+    }
+  });
   
   // === SESSIONS ===
   app.post(api.sessions.create.path, async (req, res) => {
