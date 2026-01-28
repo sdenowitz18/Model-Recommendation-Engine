@@ -162,7 +162,7 @@ export async function registerRoutes(
       if (!session) return res.status(404).json({ message: "Session not found" });
       
       // Mark context as ready and generate recommendations
-      await storage.updateSchoolContext(session.id, { isReadyForRecommendation: true });
+      await storage.markContextReady(session.id);
       await generateRecommendations(session.id);
       
       res.json({ message: "Recommendations generated" });
