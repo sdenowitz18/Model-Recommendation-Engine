@@ -58,12 +58,20 @@ export const comparisonSelections = pgTable("comparison_selections", {
   createdAt: timestamp("created_at").defaultNow(),
 });
 
+// === ADVISOR CONFIG ===
+export const advisorConfig = pgTable("advisor_config", {
+  id: serial("id").primaryKey(),
+  systemPrompt: text("system_prompt").notNull(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
 // === SCHEMAS ===
 export const insertModelSchema = createInsertSchema(models).omit({ id: true });
 export const insertSessionSchema = createInsertSchema(sessions).omit({ id: true, createdAt: true, updatedAt: true });
 export const insertSchoolContextSchema = createInsertSchema(schoolContexts).omit({ id: true });
 export const insertRecommendationSchema = createInsertSchema(recommendations).omit({ id: true, createdAt: true });
 export const insertComparisonSelectionSchema = createInsertSchema(comparisonSelections).omit({ id: true, createdAt: true });
+export const insertAdvisorConfigSchema = createInsertSchema(advisorConfig).omit({ id: true, updatedAt: true });
 
 // === TYPES ===
 export type Model = typeof models.$inferSelect;
@@ -75,6 +83,8 @@ export type InsertSchoolContext = z.infer<typeof insertSchoolContextSchema>;
 export type Recommendation = typeof recommendations.$inferSelect;
 export type InsertRecommendation = z.infer<typeof insertRecommendationSchema>;
 export type ComparisonSelection = typeof comparisonSelections.$inferSelect;
+export type AdvisorConfig = typeof advisorConfig.$inferSelect;
+export type InsertAdvisorConfig = z.infer<typeof insertAdvisorConfigSchema>;
 
 export type SchoolContextState = {
   vision: string | null;
