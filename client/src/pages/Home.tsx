@@ -5,7 +5,9 @@ import { ComparisonTable } from "@/components/ComparisonTable";
 import { ContextSummary } from "@/components/ContextSummary";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Loader2, LayoutGrid, SplitSquareHorizontal, FileText } from "lucide-react";
+import { Loader2, LayoutGrid, SplitSquareHorizontal, FileText, Upload } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Link } from "wouter";
 import { useState, useEffect } from "react";
 
 export default function Home() {
@@ -50,14 +52,22 @@ export default function Home() {
       <main className="flex-1 h-full overflow-hidden relative flex flex-col">
         {/* Mobile Header (Chat Toggle would go here if implementing mobile fully) */}
         
-        <div className="p-6 border-b bg-white flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-display font-bold text-foreground">School Design Dashboard</h1>
-            <p className="text-sm text-muted-foreground">
-              {context?.isReadyForRecommendation 
-                ? "Here are the best models based on your vision."
-                : "Building your school profile..."}
-            </p>
+        <div className="p-6 border-b bg-white flex items-center justify-between gap-4">
+          <div className="flex items-center gap-4">
+            <div>
+              <h1 className="text-2xl font-display font-bold text-foreground">School Design Dashboard</h1>
+              <p className="text-sm text-muted-foreground">
+                {context?.isReadyForRecommendation 
+                  ? "Here are the best models based on your vision."
+                  : "Building your school profile..."}
+              </p>
+            </div>
+            <Link href="/admin/import">
+              <Button variant="outline" size="sm" data-testid="button-import-models">
+                <Upload className="w-4 h-4 mr-2" />
+                Import Models
+              </Button>
+            </Link>
           </div>
 
           <Tabs value={activeTab} onValueChange={setActiveTab} className="w-[400px]">
