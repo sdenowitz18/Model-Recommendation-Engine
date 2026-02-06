@@ -357,9 +357,18 @@ function StepChat({ sessionId, stepNumber }: StepChatProps) {
     }
   }, [messages, chatMutation.isPending]);
 
+  const [greetingTriggered, setGreetingTriggered] = useState<Record<number, boolean>>({});
+
   useEffect(() => {
     setInput("");
   }, [stepNumber]);
+
+  useEffect(() => {
+    if (!isLoadingMessages && messages.length === 0 && !chatMutation.isPending && !greetingTriggered[stepNumber]) {
+      setGreetingTriggered(prev => ({ ...prev, [stepNumber]: true }));
+      chatMutation.mutate("__greeting__");
+    }
+  }, [isLoadingMessages, messages.length, stepNumber, greetingTriggered]);
 
   const handleSend = () => {
     if (!input.trim() || chatMutation.isPending) return;
@@ -395,10 +404,9 @@ function StepChat({ sessionId, stepNumber }: StepChatProps) {
               <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
             </div>
           ) : messages.length === 0 ? (
-            <div className="bg-muted p-4 rounded-2xl rounded-tl-none border border-border/50 text-sm">
-              <ReactMarkdown>
-                {`Let's work on **${step.label}**. ${step.description}. Tell me what you have, and I'll help guide you through gathering what's needed.`}
-              </ReactMarkdown>
+            <div className="flex items-center justify-center py-8">
+              <Loader2 className="w-5 h-5 animate-spin text-muted-foreground mr-2" />
+              <span className="text-sm text-muted-foreground">Preparing step guidance...</span>
             </div>
           ) : (
             messages.map((msg) => (

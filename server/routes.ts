@@ -450,7 +450,10 @@ The JSON object must have these exact keys:
       const progress = await storage.getWorkflowProgress(session.id);
       if (!progress) return res.status(404).json({ message: "Workflow not found" });
 
-      await storage.addStepMessage(session.id, stepNumber, "user", message);
+      const isGreeting = message === "__greeting__";
+      if (!isGreeting) {
+        await storage.addStepMessage(session.id, stepNumber, "user", message);
+      }
 
       const globalConfig = await storage.getAdvisorConfig();
       const globalPrompt = globalConfig?.systemPrompt || getDefaultGlobalPrompt();
@@ -516,18 +519,26 @@ The JSON object must have these exact keys:
 - "is_step_complete": boolean, set to true ONLY when you have gathered all required inputs for this step AND the user has confirmed the summary`;
 
       const conversationHistory = await storage.getStepConversations(session.id, stepNumber);
-      const messages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [
+      const aiMessages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [
         { role: "system", content: systemPrompt },
       ];
 
       const recentHistory = conversationHistory.slice(-30);
       for (const msg of recentHistory) {
-        messages.push({ role: msg.role as "user" | "assistant", content: msg.content });
+        aiMessages.push({ role: msg.role as "user" | "assistant", content: msg.content });
+      }
+
+      if (isGreeting) {
+        const stepDef = WORKFLOW_STEPS.find(s => s.number === stepNumber);
+        aiMessages.push({
+          role: "user",
+          content: `I'm starting Step ${stepNumber}: ${stepDef?.label || ""}. Please introduce this step and explicitly list all the specific inputs or information you are looking for me to provide. Be clear and specific about what you need from me.`,
+        });
       }
 
       const completion = await openai.chat.completions.create({
         model: "gpt-4o",
-        messages,
+        messages: aiMessages,
         response_format: { type: "json_object" },
       });
 
