@@ -7,8 +7,39 @@ import { openai } from "./replit_integrations/audio/client";
 import { insertModelSchema, WORKFLOW_STEPS } from "@shared/schema";
 import multer from "multer";
 import * as xlsx from "xlsx";
+import { parseOffice } from "officeparser";
 
 const upload = multer({ storage: multer.memoryStorage() });
+
+async function extractFileContent(buffer: Buffer, fileName: string, mimeType: string): Promise<string> {
+  if (
+    mimeType.includes("presentation") || mimeType.includes("powerpoint") ||
+    fileName.endsWith(".pptx") || fileName.endsWith(".ppt") ||
+    mimeType.includes("msword") || mimeType.includes("wordprocessingml") ||
+    fileName.endsWith(".doc") || fileName.endsWith(".docx") ||
+    mimeType === "application/pdf" || fileName.endsWith(".pdf")
+  ) {
+    try {
+      const result = await parseOffice(buffer);
+      if (result && typeof result.toText === 'function') {
+        return result.toText();
+      }
+      return typeof result === 'string' ? result : String(result);
+    } catch (e) {
+      console.error("officeparser error:", e);
+      return buffer.toString("utf-8");
+    }
+  }
+  if (mimeType.includes("spreadsheet") || mimeType.includes("excel") || fileName.endsWith(".xlsx") || fileName.endsWith(".xls")) {
+    const workbook = xlsx.read(buffer, { type: "buffer" });
+    const sheets = workbook.SheetNames.map(name => {
+      const sheet = workbook.Sheets[name];
+      return `Sheet: ${name}\n${xlsx.utils.sheet_to_csv(sheet)}`;
+    });
+    return sheets.join("\n\n");
+  }
+  return buffer.toString("utf-8");
+}
 
 function getDefaultGlobalPrompt(): string {
   return `You are the CCL Model Recommendation Engine, a structured thinking partner for Transcend Design Partners supporting school and district communities.
@@ -84,11 +115,12 @@ RESPONSE APPROACH:
   * Consistency (between stated aims and prior learning)
   * Coverage (consideration of common CCL leaps/design principles and outcomes surfaced in the CCL Design Kit)
 - If gaps, tensions, or under-specified areas are identified, ask focused clarifying questions
-- Translate confirmed aims into the shared Outcome Schema and Leaps Framework (knowledge base), preserving original intent
-- Summarize the aims in a concise, structured format and ask the Design Partner to confirm or refine
-- Ask the Design Partner to indicate relative importance for learner outcomes and design principles (Most important, Important, Nice to have)
+- Translate confirmed aims into SEPARATE categories: (a) Outcomes, (b) LEAPs / Design Principles, and (c) Intended Learner Experience — preserving original intent
+- When capturing step data, always distinguish between outcomes and LEAPs/design principles as separate fields
+- Summarize the aims in a concise, structured format organized by these categories and ask the Design Partner to confirm or refine
+- Ask the Design Partner to indicate relative importance for each category (Most important, Important, Nice to have)
 
-OUTPUT: A validated Aims for Learners Summary, mapped to the Outcome Schema and Leaps Framework.`,
+OUTPUT: A validated Aims for Learners Summary with distinct sections for Outcomes, LEAPs/Design Principles, and Intended Experience.`,
 
     3: `STEP 3 — CAPTURE INTENDED LEARNING EXPERIENCE & CORE PRACTICES
 
@@ -511,11 +543,14 @@ ${priorStepsContext ? `\n=== PRIOR STEPS SUMMARY ===\n${priorStepsContext}` : ""
 ${currentStepContext}
 ${modelsContext}
 
+=== RESPONSE STYLE ===
+Keep responses SHORT and focused. Aim for 2-4 concise bullet points or a brief paragraph (3-5 sentences max). Avoid lengthy explanations, preambles, or repeating information the user already provided. Be direct and conversational. Only elaborate when the user asks for more detail.
+
 === RESPONSE FORMAT ===
 You MUST respond in valid JSON format ONLY. Do not include any text outside the JSON object.
 The JSON object must have these exact keys:
-- "assistant_message": string with your response to the user (use markdown formatting for readability)
-- "step_data_patch": object containing any structured data extracted from this conversation that should be saved for this step. Use descriptive keys. For example: {"school_name": "...", "grade_band": "...", "demographics": "..."}. Set to null if no new data was extracted.
+- "assistant_message": string with your CONCISE response to the user (use markdown formatting, keep it brief)
+- "step_data_patch": object containing any structured data extracted from this conversation that should be saved for this step. Use descriptive keys. For example: {"school_name": "...", "grade_band": "...", "demographics": "..."}. Set to null if no new data was extracted. For Step 2, include separate keys for "outcomes", "leaps_design_principles", and "intended_experience" when the user shares aims-related information.
 - "is_step_complete": boolean, set to true ONLY when you have gathered all required inputs for this step AND the user has confirmed the summary`;
 
       const conversationHistory = await storage.getStepConversations(session.id, stepNumber);
@@ -532,7 +567,7 @@ The JSON object must have these exact keys:
         const stepDef = WORKFLOW_STEPS.find(s => s.number === stepNumber);
         aiMessages.push({
           role: "user",
-          content: `I'm starting Step ${stepNumber}: ${stepDef?.label || ""}. Please introduce this step and explicitly list all the specific inputs or information you are looking for me to provide. Be clear and specific about what you need from me.`,
+          content: `I'm starting Step ${stepNumber}: ${stepDef?.label || ""}. Briefly introduce this step and list the specific inputs you need from me. Keep it short — just a quick intro and a bullet list of what you're looking for.`,
         });
       }
 
@@ -674,17 +709,7 @@ The JSON object must have these exact keys:
       const fileName = req.file.originalname;
       const fileType = req.file.mimetype;
       
-      let fileContent = "";
-      if (fileType.includes("spreadsheet") || fileType.includes("excel") || fileName.endsWith(".xlsx") || fileName.endsWith(".xls")) {
-        const workbook = xlsx.read(req.file.buffer, { type: "buffer" });
-        const sheets = workbook.SheetNames.map(name => {
-          const sheet = workbook.Sheets[name];
-          return `Sheet: ${name}\n${xlsx.utils.sheet_to_csv(sheet)}`;
-        });
-        fileContent = sheets.join("\n\n");
-      } else {
-        fileContent = req.file.buffer.toString("utf-8");
-      }
+      const fileContent = await extractFileContent(req.file.buffer, fileName, fileType);
 
       const doc = await storage.addStepDocument(session.id, stepNumber, fileName, fileContent, fileType);
       res.json(doc);
@@ -954,17 +979,7 @@ The JSON object must have these exact keys:
 
       if (req.file) {
         fileName = req.file.originalname;
-        const fileType = req.file.mimetype;
-        if (fileType.includes("spreadsheet") || fileType.includes("excel") || fileName.endsWith(".xlsx") || fileName.endsWith(".xls")) {
-          const workbook = xlsx.read(req.file.buffer, { type: "buffer" });
-          const sheets = workbook.SheetNames.map(name => {
-            const sheet = workbook.Sheets[name];
-            return `Sheet: ${name}\n${xlsx.utils.sheet_to_csv(sheet)}`;
-          });
-          content = sheets.join("\n\n");
-        } else {
-          content = req.file.buffer.toString("utf-8");
-        }
+        content = await extractFileContent(req.file.buffer, fileName, req.file.mimetype);
       }
 
       const entry = await storage.addKnowledgeBaseEntry(stepNumber, title, content, fileName);

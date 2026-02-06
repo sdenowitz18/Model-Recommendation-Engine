@@ -17,7 +17,8 @@ import { Link } from "wouter";
 import {
   Send, Sparkles, User, Loader2, RotateCcw, Check, ChevronRight,
   Upload, FileText, X, Settings, ArrowRight, RefreshCcw, School,
-  Target, BookOpen, AlertTriangle, Sliders, LayoutGrid, ClipboardCheck
+  Target, BookOpen, AlertTriangle, Sliders, LayoutGrid, ClipboardCheck,
+  Paperclip
 } from "lucide-react";
 
 const STEP_ICONS: Record<number, any> = {
@@ -326,6 +327,7 @@ interface StepChatProps {
 function StepChat({ sessionId, stepNumber }: StepChatProps) {
   const [input, setInput] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
+  const chatFileRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
   const qc = useQueryClient();
 
@@ -381,6 +383,23 @@ function StepChat({ sessionId, stepNumber }: StepChatProps) {
       e.preventDefault();
       handleSend();
     }
+  };
+
+  const handleChatFileAttach = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const url = `/api/sessions/${sessionId}/workflow/documents/${stepNumber}/upload`;
+      const res = await fetch(url, { method: "POST", body: formData, credentials: "include" });
+      if (!res.ok) throw new Error("Upload failed");
+      qc.invalidateQueries({ queryKey: [api.workflow.getDocuments.path, sessionId, stepNumber] });
+      chatMutation.mutate(`I've attached a document: "${file.name}". Please review it and incorporate relevant information for this step.`);
+    } catch (err) {
+      toast({ title: "Upload failed", description: "Could not attach file.", variant: "destructive" });
+    }
+    e.target.value = "";
   };
 
   const step = WORKFLOW_STEPS.find(s => s.number === stepNumber)!;
@@ -456,7 +475,24 @@ function StepChat({ sessionId, stepNumber }: StepChatProps) {
       </div>
 
       <div className="p-3 border-t border-border bg-white">
+        <input
+          ref={chatFileRef}
+          type="file"
+          onChange={handleChatFileAttach}
+          className="hidden"
+          accept=".txt,.csv,.xlsx,.xls,.md,.json,.pdf,.doc,.docx,.pptx,.ppt"
+          data-testid="input-chat-file"
+        />
         <div className="relative flex items-end gap-2">
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => chatFileRef.current?.click()}
+            disabled={chatMutation.isPending}
+            data-testid="button-chat-attach"
+          >
+            <Paperclip className="w-4 h-4" />
+          </Button>
           <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
@@ -541,7 +577,7 @@ function StepDocumentsPanel({ sessionId, stepNumber }: StepDocumentsPanelProps) 
               type="file"
               onChange={handleFileChange}
               className="hidden"
-              accept=".txt,.csv,.xlsx,.xls,.md,.json,.pdf,.doc,.docx"
+              accept=".txt,.csv,.xlsx,.xls,.md,.json,.pdf,.doc,.docx,.pptx,.ppt"
               data-testid="input-file-upload"
             />
             <Button

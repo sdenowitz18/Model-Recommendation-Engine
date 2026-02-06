@@ -234,7 +234,6 @@ function StepConfigEditor({ stepConfig }: { stepConfig: StepConfigResponse }) {
 function KnowledgeBaseManager({ entries, onRefresh }: { entries: KnowledgeBaseEntry[]; onRefresh: () => void }) {
   const [newTitle, setNewTitle] = useState("");
   const [newStepNumber, setNewStepNumber] = useState(1);
-  const [newContent, setNewContent] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
 
@@ -251,7 +250,6 @@ function KnowledgeBaseManager({ entries, onRefresh }: { entries: KnowledgeBaseEn
     onSuccess: () => {
       onRefresh();
       setNewTitle("");
-      setNewContent("");
       toast({ title: "Knowledge base entry added" });
     },
     onError: () => {
@@ -271,15 +269,6 @@ function KnowledgeBaseManager({ entries, onRefresh }: { entries: KnowledgeBaseEn
       toast({ title: "Entry deleted" });
     },
   });
-
-  const handleAdd = () => {
-    if (!newTitle.trim()) return;
-    const formData = new FormData();
-    formData.append("stepNumber", String(newStepNumber));
-    formData.append("title", newTitle);
-    formData.append("content", newContent);
-    addMutation.mutate(formData);
-  };
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -311,7 +300,7 @@ function KnowledgeBaseManager({ entries, onRefresh }: { entries: KnowledgeBaseEn
             Add Knowledge Base Entry
           </CardTitle>
           <CardDescription>
-            Upload reference documents or paste content that the AI advisor should use when working through a specific step.
+            Upload reference documents that the AI advisor should use when working through a specific step.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -341,43 +330,23 @@ function KnowledgeBaseManager({ entries, onRefresh }: { entries: KnowledgeBaseEn
               </select>
             </div>
           </div>
-          <div className="space-y-2">
-            <label className="text-sm font-medium">Content (paste text or upload a file)</label>
-            <Textarea
-              value={newContent}
-              onChange={(e) => setNewContent(e.target.value)}
-              placeholder="Paste reference content here..."
-              className="min-h-[150px] font-mono text-sm"
-              data-testid="input-kb-content"
-            />
-          </div>
           <div className="flex items-center gap-3 flex-wrap">
+            <input
+              ref={fileInputRef}
+              type="file"
+              onChange={handleFileUpload}
+              className="hidden"
+              accept=".txt,.csv,.xlsx,.xls,.md,.json,.doc,.docx,.pptx,.ppt,.pdf"
+              data-testid="input-kb-file"
+            />
             <Button
-              onClick={handleAdd}
+              onClick={() => fileInputRef.current?.click()}
               disabled={!newTitle.trim() || addMutation.isPending}
-              data-testid="button-add-kb"
+              data-testid="button-upload-kb"
             >
-              {addMutation.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Save className="w-4 h-4 mr-2" />}
-              Add Entry
+              {addMutation.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Upload className="w-4 h-4 mr-2" />}
+              Upload Document
             </Button>
-            <div>
-              <input
-                ref={fileInputRef}
-                type="file"
-                onChange={handleFileUpload}
-                className="hidden"
-                accept=".txt,.csv,.xlsx,.xls,.md,.json,.doc,.docx"
-                data-testid="input-kb-file"
-              />
-              <Button
-                variant="outline"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={!newTitle.trim() || addMutation.isPending}
-                data-testid="button-upload-kb"
-              >
-                <Upload className="w-4 h-4 mr-2" /> Upload File Instead
-              </Button>
-            </div>
           </div>
         </CardContent>
       </Card>
