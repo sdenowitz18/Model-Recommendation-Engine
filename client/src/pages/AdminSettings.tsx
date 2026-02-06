@@ -1,13 +1,18 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
+import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { useToast } from "@/hooks/use-toast";
-import { Loader2, Save, RotateCcw, Settings, ArrowLeft, RefreshCw } from "lucide-react";
+import { Loader2, Save, RotateCcw, Settings, ArrowLeft, RefreshCw, Upload, X, FileText, BookOpen } from "lucide-react";
 import { Link } from "wouter";
 import { api } from "@shared/routes";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { WORKFLOW_STEPS, type KnowledgeBaseEntry } from "@shared/schema";
 
 interface ConfigResponse {
   systemPrompt: string;
@@ -15,57 +20,52 @@ interface ConfigResponse {
   updatedAt: string | null;
 }
 
+interface StepConfigResponse {
+  stepNumber: number;
+  stepLabel: string;
+  systemPrompt: string;
+  defaultPrompt: string;
+  updatedAt: string | null;
+  isCustom: boolean;
+}
+
 export default function AdminSettings() {
   const { toast } = useToast();
-  const [systemPrompt, setSystemPrompt] = useState("");
+  const [globalPrompt, setGlobalPrompt] = useState("");
+  const [activeTab, setActiveTab] = useState("global");
 
-  const { data: config, isLoading } = useQuery<ConfigResponse>({
+  const { data: config, isLoading: isConfigLoading } = useQuery<ConfigResponse>({
     queryKey: [api.admin.getConfig.path],
+  });
+
+  const { data: stepConfigs = [], isLoading: isStepConfigsLoading } = useQuery<StepConfigResponse[]>({
+    queryKey: [api.admin.getStepConfigs.path],
+  });
+
+  const { data: kbEntries = [], refetch: refetchKb } = useQuery<KnowledgeBaseEntry[]>({
+    queryKey: [api.admin.getKnowledgeBase.path],
   });
 
   useEffect(() => {
     if (config?.systemPrompt) {
-      setSystemPrompt(config.systemPrompt);
+      setGlobalPrompt(config.systemPrompt);
     }
   }, [config]);
 
-  const saveMutation = useMutation({
+  const saveGlobalMutation = useMutation({
     mutationFn: async (prompt: string) => {
       return apiRequest("POST", api.admin.saveConfig.path, { systemPrompt: prompt });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: [api.admin.getConfig.path] });
-      toast({
-        title: "Settings saved",
-        description: "Your custom instructions have been updated.",
-      });
+      toast({ title: "Global instructions saved" });
     },
     onError: () => {
-      toast({
-        title: "Error",
-        description: "Failed to save settings. Please try again.",
-        variant: "destructive",
-      });
+      toast({ title: "Error", description: "Failed to save.", variant: "destructive" });
     },
   });
 
-  const handleSave = () => {
-    saveMutation.mutate(systemPrompt);
-  };
-
-  const handleResetToSaved = () => {
-    if (config?.systemPrompt) {
-      setSystemPrompt(config.systemPrompt);
-    }
-  };
-
-  const handleResetToDefault = () => {
-    if (config?.defaultPrompt) {
-      setSystemPrompt(config.defaultPrompt);
-    }
-  };
-
-  if (isLoading) {
+  if (isConfigLoading || isStepConfigsLoading) {
     return (
       <div className="flex items-center justify-center min-h-screen">
         <Loader2 className="w-8 h-8 animate-spin text-primary" />
@@ -75,109 +75,359 @@ export default function AdminSettings() {
 
   return (
     <div className="min-h-screen bg-muted/30 py-8 px-4">
-      <div className="max-w-4xl mx-auto">
-        <div className="mb-6">
+      <div className="max-w-5xl mx-auto">
+        <div className="mb-6 flex items-center justify-between gap-4 flex-wrap">
           <Link href="/">
             <Button variant="ghost" size="sm" data-testid="link-back-home">
               <ArrowLeft className="w-4 h-4 mr-2" />
               Back to Advisor
             </Button>
           </Link>
+          <Link href="/admin/import">
+            <Button variant="outline" size="sm" data-testid="link-import-models">
+              <Upload className="w-4 h-4 mr-2" />
+              Import Models
+            </Button>
+          </Link>
         </div>
 
-        <Card>
-          <CardHeader>
-            <div className="flex items-center gap-3">
-              <div className="p-2 bg-primary/10 rounded-lg">
-                <Settings className="w-6 h-6 text-primary" />
-              </div>
-              <div>
-                <CardTitle>Advisor Custom Instructions</CardTitle>
+        <div className="flex items-center gap-3 mb-6">
+          <div className="p-2 bg-primary/10 rounded-lg">
+            <Settings className="w-6 h-6 text-primary" />
+          </div>
+          <div>
+            <h1 className="text-2xl font-display font-bold">Advisor Settings</h1>
+            <p className="text-sm text-muted-foreground">Configure global and step-specific AI instructions, and manage the knowledge base.</p>
+          </div>
+        </div>
+
+        <Tabs value={activeTab} onValueChange={setActiveTab}>
+          <TabsList className="mb-6">
+            <TabsTrigger value="global">Global Instructions</TabsTrigger>
+            <TabsTrigger value="steps">Step Instructions</TabsTrigger>
+            <TabsTrigger value="knowledge">Knowledge Base</TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="global">
+            <Card>
+              <CardHeader>
+                <CardTitle>Global System Prompt</CardTitle>
                 <CardDescription>
-                  Configure how the AI advisor behaves, what phases it follows, and how it guides users through the discovery process.
+                  These instructions define the advisor's identity, communication style, and overall workflow awareness. They are applied across all steps.
                 </CardDescription>
-              </div>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <Textarea
+                  value={globalPrompt}
+                  onChange={(e) => setGlobalPrompt(e.target.value)}
+                  placeholder="Enter global instructions..."
+                  className="min-h-[400px] font-mono text-sm"
+                  data-testid="input-global-prompt"
+                />
+                {config?.updatedAt && (
+                  <p className="text-xs text-muted-foreground">
+                    Last updated: {new Date(config.updatedAt).toLocaleString()}
+                  </p>
+                )}
+                <div className="flex items-center gap-3 pt-4 border-t flex-wrap">
+                  <Button
+                    onClick={() => saveGlobalMutation.mutate(globalPrompt)}
+                    disabled={saveGlobalMutation.isPending}
+                    data-testid="button-save-global"
+                  >
+                    {saveGlobalMutation.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Save className="w-4 h-4 mr-2" />}
+                    Save Changes
+                  </Button>
+                  <Button variant="outline" onClick={() => config?.systemPrompt && setGlobalPrompt(config.systemPrompt)}>
+                    <RotateCcw className="w-4 h-4 mr-2" /> Undo
+                  </Button>
+                  <Button variant="outline" onClick={() => config?.defaultPrompt && setGlobalPrompt(config.defaultPrompt)}>
+                    <RefreshCw className="w-4 h-4 mr-2" /> Reset to Default
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="steps">
+            <div className="space-y-4">
+              {stepConfigs.map((sc) => (
+                <StepConfigEditor key={sc.stepNumber} stepConfig={sc} />
+              ))}
             </div>
-          </CardHeader>
-          <CardContent className="space-y-6">
+          </TabsContent>
+
+          <TabsContent value="knowledge">
+            <KnowledgeBaseManager entries={kbEntries} onRefresh={refetchKb} />
+          </TabsContent>
+        </Tabs>
+      </div>
+    </div>
+  );
+}
+
+function StepConfigEditor({ stepConfig }: { stepConfig: StepConfigResponse }) {
+  const [prompt, setPrompt] = useState(stepConfig.systemPrompt);
+  const [isExpanded, setIsExpanded] = useState(false);
+  const { toast } = useToast();
+
+  const saveMutation = useMutation({
+    mutationFn: async (systemPrompt: string) => {
+      const url = `/api/admin/step-configs/${stepConfig.stepNumber}`;
+      return apiRequest("POST", url, { systemPrompt });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: [api.admin.getStepConfigs.path] });
+      toast({ title: `Step ${stepConfig.stepNumber} instructions saved` });
+    },
+    onError: () => {
+      toast({ title: "Error", description: "Failed to save.", variant: "destructive" });
+    },
+  });
+
+  return (
+    <Card>
+      <CardHeader className="cursor-pointer" onClick={() => setIsExpanded(!isExpanded)}>
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <Badge variant="secondary" className="text-xs">{stepConfig.stepNumber}</Badge>
+            <div>
+              <CardTitle className="text-base">{stepConfig.stepLabel}</CardTitle>
+              {stepConfig.isCustom && (
+                <span className="text-xs text-primary">Customized</span>
+              )}
+            </div>
+          </div>
+          <Button variant="ghost" size="sm">
+            {isExpanded ? "Collapse" : "Expand"}
+          </Button>
+        </div>
+      </CardHeader>
+      {isExpanded && (
+        <CardContent className="space-y-4">
+          <Textarea
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            className="min-h-[300px] font-mono text-sm"
+            data-testid={`input-step-${stepConfig.stepNumber}-prompt`}
+          />
+          <div className="flex items-center gap-3 flex-wrap">
+            <Button
+              onClick={() => saveMutation.mutate(prompt)}
+              disabled={saveMutation.isPending}
+              size="sm"
+              data-testid={`button-save-step-${stepConfig.stepNumber}`}
+            >
+              {saveMutation.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Save className="w-4 h-4 mr-2" />}
+              Save
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => setPrompt(stepConfig.defaultPrompt)}>
+              <RefreshCw className="w-4 h-4 mr-2" /> Reset to Default
+            </Button>
+          </div>
+        </CardContent>
+      )}
+    </Card>
+  );
+}
+
+function KnowledgeBaseManager({ entries, onRefresh }: { entries: KnowledgeBaseEntry[]; onRefresh: () => void }) {
+  const [newTitle, setNewTitle] = useState("");
+  const [newStepNumber, setNewStepNumber] = useState(1);
+  const [newContent, setNewContent] = useState("");
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const { toast } = useToast();
+
+  const addMutation = useMutation({
+    mutationFn: async (formData: FormData) => {
+      const res = await fetch(api.admin.addKnowledgeBase.path, {
+        method: "POST",
+        body: formData,
+        credentials: "include",
+      });
+      if (!res.ok) throw new Error("Failed to add");
+      return res.json();
+    },
+    onSuccess: () => {
+      onRefresh();
+      setNewTitle("");
+      setNewContent("");
+      toast({ title: "Knowledge base entry added" });
+    },
+    onError: () => {
+      toast({ title: "Error", description: "Failed to add entry.", variant: "destructive" });
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async (id: number) => {
+      const url = `/api/admin/knowledge-base/${id}`;
+      const res = await fetch(url, { method: "DELETE", credentials: "include" });
+      if (!res.ok) throw new Error("Failed to delete");
+      return res.json();
+    },
+    onSuccess: () => {
+      onRefresh();
+      toast({ title: "Entry deleted" });
+    },
+  });
+
+  const handleAdd = () => {
+    if (!newTitle.trim()) return;
+    const formData = new FormData();
+    formData.append("stepNumber", String(newStepNumber));
+    formData.append("title", newTitle);
+    formData.append("content", newContent);
+    addMutation.mutate(formData);
+  };
+
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !newTitle.trim()) {
+      if (!newTitle.trim()) {
+        toast({ title: "Please enter a title first", variant: "destructive" });
+      }
+      return;
+    }
+    const formData = new FormData();
+    formData.append("stepNumber", String(newStepNumber));
+    formData.append("title", newTitle);
+    formData.append("file", file);
+    addMutation.mutate(formData);
+    e.target.value = "";
+  };
+
+  const groupedEntries = WORKFLOW_STEPS.map(step => ({
+    step,
+    entries: entries.filter(e => e.stepNumber === step.number),
+  }));
+
+  return (
+    <div className="space-y-6">
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <BookOpen className="w-5 h-5 text-primary" />
+            Add Knowledge Base Entry
+          </CardTitle>
+          <CardDescription>
+            Upload reference documents or paste content that the AI advisor should use when working through a specific step.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="space-y-2">
-              <label className="text-sm font-medium text-foreground">
-                System Prompt
-              </label>
-              <p className="text-xs text-muted-foreground">
-                This prompt defines the advisor's personality, conversation phases, and behavior. 
-                The current session context and JSON response format are automatically appended.
-              </p>
-              <Textarea
-                value={systemPrompt}
-                onChange={(e) => setSystemPrompt(e.target.value)}
-                placeholder="Enter your custom instructions for the AI advisor..."
-                className="min-h-[500px] font-mono text-sm"
-                data-testid="input-system-prompt"
+              <label className="text-sm font-medium">Title</label>
+              <Input
+                value={newTitle}
+                onChange={(e) => setNewTitle(e.target.value)}
+                placeholder="e.g., CCL Design Kit"
+                data-testid="input-kb-title"
               />
             </div>
-
-            {config?.updatedAt && (
-              <p className="text-xs text-muted-foreground">
-                Last updated: {new Date(config.updatedAt).toLocaleString()}
-              </p>
-            )}
-
-            <div className="flex items-center gap-3 pt-4 border-t flex-wrap">
-              <Button
-                onClick={handleSave}
-                disabled={saveMutation.isPending}
-                data-testid="button-save-config"
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Assign to Step</label>
+              <select
+                value={newStepNumber}
+                onChange={(e) => setNewStepNumber(Number(e.target.value))}
+                className="w-full h-9 rounded-md border border-input bg-background px-3 text-sm"
+                data-testid="select-kb-step"
               >
-                {saveMutation.isPending ? (
-                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                ) : (
-                  <Save className="w-4 h-4 mr-2" />
-                )}
-                Save Changes
-              </Button>
+                {WORKFLOW_STEPS.map(s => (
+                  <option key={s.number} value={s.number}>
+                    Step {s.number}: {s.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Content (paste text or upload a file)</label>
+            <Textarea
+              value={newContent}
+              onChange={(e) => setNewContent(e.target.value)}
+              placeholder="Paste reference content here..."
+              className="min-h-[150px] font-mono text-sm"
+              data-testid="input-kb-content"
+            />
+          </div>
+          <div className="flex items-center gap-3 flex-wrap">
+            <Button
+              onClick={handleAdd}
+              disabled={!newTitle.trim() || addMutation.isPending}
+              data-testid="button-add-kb"
+            >
+              {addMutation.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Save className="w-4 h-4 mr-2" />}
+              Add Entry
+            </Button>
+            <div>
+              <input
+                ref={fileInputRef}
+                type="file"
+                onChange={handleFileUpload}
+                className="hidden"
+                accept=".txt,.csv,.xlsx,.xls,.md,.json,.doc,.docx"
+                data-testid="input-kb-file"
+              />
               <Button
                 variant="outline"
-                onClick={handleResetToSaved}
-                disabled={saveMutation.isPending}
-                data-testid="button-reset-config"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={!newTitle.trim() || addMutation.isPending}
+                data-testid="button-upload-kb"
               >
-                <RotateCcw className="w-4 h-4 mr-2" />
-                Undo Changes
-              </Button>
-              <Button
-                variant="outline"
-                onClick={handleResetToDefault}
-                disabled={saveMutation.isPending}
-                data-testid="button-reset-default"
-              >
-                <RefreshCw className="w-4 h-4 mr-2" />
-                Reset to Default
+                <Upload className="w-4 h-4 mr-2" /> Upload File Instead
               </Button>
             </div>
-          </CardContent>
-        </Card>
+          </div>
+        </CardContent>
+      </Card>
 
-        <Card className="mt-6">
-          <CardHeader>
-            <CardTitle className="text-base">Tips for Writing Custom Instructions</CardTitle>
-          </CardHeader>
-          <CardContent className="text-sm text-muted-foreground space-y-3">
-            <p>
-              <strong>Define phases:</strong> Structure the conversation into clear phases like "Context Discovery", "Readiness Check", "Recommendations", and "Comparison".
-            </p>
-            <p>
-              <strong>Set behavior rules:</strong> Tell the advisor to ask one question at a time, summarize periodically, and never overwhelm users with long lists.
-            </p>
-            <p>
-              <strong>Specify what to collect:</strong> List the key information categories like desired outcomes, grade bands, key practices, constraints, and implementation supports.
-            </p>
-            <p>
-              <strong>Guide recommendations:</strong> Explain how the advisor should recommend models - with rationale, assumptions, and watch-outs.
-            </p>
+      {groupedEntries.map(({ step, entries: stepEntries }) => (
+        stepEntries.length > 0 && (
+          <Card key={step.number}>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base flex items-center gap-2">
+                <Badge variant="secondary">{step.number}</Badge>
+                {step.label}
+                <span className="text-muted-foreground font-normal text-sm">({stepEntries.length} entries)</span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-2">
+                {stepEntries.map((entry) => (
+                  <div key={entry.id} className="flex items-center justify-between gap-4 p-3 rounded-md bg-muted/50">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <FileText className="w-4 h-4 text-muted-foreground shrink-0" />
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium truncate">{entry.title}</p>
+                        {entry.fileName && <p className="text-xs text-muted-foreground truncate">{entry.fileName}</p>}
+                        <p className="text-xs text-muted-foreground">{entry.content.length} characters</p>
+                      </div>
+                    </div>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => deleteMutation.mutate(entry.id)}
+                      data-testid={`button-delete-kb-${entry.id}`}
+                    >
+                      <X className="w-4 h-4" />
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        )
+      ))}
+
+      {entries.length === 0 && (
+        <Card className="border-dashed">
+          <CardContent className="py-12 text-center">
+            <BookOpen className="w-8 h-8 text-muted-foreground mx-auto mb-3" />
+            <p className="text-muted-foreground">No knowledge base entries yet. Add reference documents above.</p>
           </CardContent>
         </Card>
-      </div>
+      )}
     </div>
   );
 }

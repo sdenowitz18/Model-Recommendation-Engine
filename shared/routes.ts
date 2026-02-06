@@ -14,7 +14,6 @@ export const errorSchemas = {
   }),
 };
 
-// Chat advisor response format
 export const chatAdvisorResponseSchema = z.object({
   assistant_message: z.string(),
   context_patch: z.object({
@@ -29,6 +28,12 @@ export const chatAdvisorResponseSchema = z.object({
   next_question: z.string().nullable(),
   should_recommend: z.boolean(),
   should_compare: z.boolean(),
+});
+
+export const stepChatResponseSchema = z.object({
+  assistant_message: z.string(),
+  step_data_patch: z.record(z.any()).optional(),
+  is_step_complete: z.boolean(),
 });
 
 export const api = {
@@ -73,6 +78,20 @@ export const api = {
       }),
       responses: {
         200: chatAdvisorResponseSchema,
+        404: errorSchemas.notFound,
+        500: errorSchemas.internal,
+      },
+    },
+    stepAdvisor: {
+      method: 'POST' as const,
+      path: '/api/chat/step-advisor',
+      input: z.object({
+        sessionId: z.string(),
+        stepNumber: z.number(),
+        message: z.string(),
+      }),
+      responses: {
+        200: stepChatResponseSchema,
         404: errorSchemas.notFound,
         500: errorSchemas.internal,
       },
@@ -123,6 +142,43 @@ export const api = {
       },
     },
   },
+  workflow: {
+    getProgress: {
+      method: 'GET' as const,
+      path: '/api/sessions/:sessionId/workflow',
+    },
+    updateProgress: {
+      method: 'POST' as const,
+      path: '/api/sessions/:sessionId/workflow',
+      input: z.object({
+        currentStep: z.number(),
+        stepsCompleted: z.array(z.number()),
+        stepData: z.record(z.any()),
+      }),
+    },
+    confirmStep: {
+      method: 'POST' as const,
+      path: '/api/sessions/:sessionId/workflow/confirm-step',
+      input: z.object({ stepNumber: z.number() }),
+    },
+    resetStep: {
+      method: 'POST' as const,
+      path: '/api/sessions/:sessionId/workflow/reset-step',
+      input: z.object({ stepNumber: z.number() }),
+    },
+    resetAll: {
+      method: 'POST' as const,
+      path: '/api/sessions/:sessionId/workflow/reset-all',
+    },
+    getConversation: {
+      method: 'GET' as const,
+      path: '/api/sessions/:sessionId/workflow/conversation/:stepNumber',
+    },
+    getDocuments: {
+      method: 'GET' as const,
+      path: '/api/sessions/:sessionId/workflow/documents/:stepNumber',
+    },
+  },
   admin: {
     getConfig: {
       method: 'GET' as const,
@@ -142,6 +198,27 @@ export const api = {
         200: z.custom<typeof advisorConfig.$inferSelect>(),
       },
     },
+    getStepConfigs: {
+      method: 'GET' as const,
+      path: '/api/admin/step-configs',
+    },
+    saveStepConfig: {
+      method: 'POST' as const,
+      path: '/api/admin/step-configs/:stepNumber',
+      input: z.object({ systemPrompt: z.string() }),
+    },
+    getKnowledgeBase: {
+      method: 'GET' as const,
+      path: '/api/admin/knowledge-base',
+    },
+    addKnowledgeBase: {
+      method: 'POST' as const,
+      path: '/api/admin/knowledge-base',
+    },
+    deleteKnowledgeBase: {
+      method: 'DELETE' as const,
+      path: '/api/admin/knowledge-base/:id',
+    },
   }
 };
 
@@ -158,4 +235,5 @@ export function buildUrl(path: string, params?: Record<string, string | number>)
 }
 
 export type ChatAdvisorResponse = z.infer<typeof chatAdvisorResponseSchema>;
+export type StepChatResponse = z.infer<typeof stepChatResponseSchema>;
 export type ModelResponse = z.infer<typeof api.models.list.responses[200]>[number];

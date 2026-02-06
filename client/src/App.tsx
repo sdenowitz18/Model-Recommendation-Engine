@@ -4,7 +4,7 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import NotFound from "@/pages/not-found";
-import Home from "@/pages/Home";
+import Workflow from "@/pages/Workflow";
 import ModelDetail from "@/pages/ModelDetail";
 import AdminImport from "@/pages/admin-import";
 import AdminSettings from "@/pages/AdminSettings";
@@ -12,7 +12,7 @@ import AdminSettings from "@/pages/AdminSettings";
 function Router() {
   return (
     <Switch>
-      <Route path="/" component={Home} />
+      <Route path="/" component={Workflow} />
       <Route path="/models/:id" component={ModelDetail} />
       <Route path="/admin/import" component={AdminImport} />
       <Route path="/admin/settings" component={AdminSettings} />

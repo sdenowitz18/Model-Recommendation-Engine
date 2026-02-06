@@ -1,11 +1,13 @@
 import { db } from "./db";
 import {
   models, sessions, schoolContexts, recommendations, comparisonSelections, advisorConfig,
+  workflowProgress, stepConversations, stepDocuments, knowledgeBase, stepAdvisorConfigs,
   type Model, type InsertModel, type Session, type SchoolContext, type InsertSchoolContext,
   type Recommendation, type InsertRecommendation, type ComparisonSelection,
-  type SchoolContextState, type AdvisorConfig
+  type SchoolContextState, type AdvisorConfig, type WorkflowProgress, type StepConversation,
+  type StepDocument, type KnowledgeBaseEntry, type StepAdvisorConfig, type StepData
 } from "@shared/schema";
-import { eq, desc, inArray } from "drizzle-orm";
+import { eq, desc, and, asc } from "drizzle-orm";
 
 export interface IStorage {
   // Models
@@ -18,7 +20,7 @@ export interface IStorage {
   createSession(sessionId: string): Promise<Session>;
   getSession(sessionId: string): Promise<Session | undefined>;
   
-  // Context
+  // Context (legacy)
   getSchoolContext(sessionId: number): Promise<SchoolContext | undefined>;
   updateSchoolContext(sessionId: number, patch: Partial<SchoolContextState>): Promise<SchoolContext>;
   markContextReady(sessionId: number): Promise<void>;
@@ -34,9 +36,39 @@ export interface IStorage {
   // Clear session
   clearSessionData(sessionId: number): Promise<void>;
   
-  // Advisor config
+  // Advisor config (global)
   getAdvisorConfig(): Promise<AdvisorConfig | undefined>;
   saveAdvisorConfig(systemPrompt: string): Promise<AdvisorConfig>;
+
+  // Workflow Progress
+  getWorkflowProgress(sessionId: number): Promise<WorkflowProgress | undefined>;
+  createWorkflowProgress(sessionId: number): Promise<WorkflowProgress>;
+  updateWorkflowProgress(sessionId: number, currentStep: number, stepsCompleted: number[], stepData: StepData): Promise<WorkflowProgress>;
+  resetWorkflowStep(sessionId: number, stepNumber: number): Promise<void>;
+  resetAllWorkflow(sessionId: number): Promise<void>;
+
+  // Step Conversations
+  getStepConversations(sessionId: number, stepNumber: number): Promise<StepConversation[]>;
+  addStepMessage(sessionId: number, stepNumber: number, role: string, content: string): Promise<StepConversation>;
+  clearStepConversation(sessionId: number, stepNumber: number): Promise<void>;
+  clearAllStepConversations(sessionId: number): Promise<void>;
+
+  // Step Documents
+  getStepDocuments(sessionId: number, stepNumber: number): Promise<StepDocument[]>;
+  getAllStepDocuments(sessionId: number): Promise<StepDocument[]>;
+  addStepDocument(sessionId: number, stepNumber: number, fileName: string, fileContent: string, fileType: string): Promise<StepDocument>;
+  deleteStepDocument(id: number): Promise<void>;
+
+  // Knowledge Base
+  getKnowledgeBase(stepNumber: number): Promise<KnowledgeBaseEntry[]>;
+  getAllKnowledgeBase(): Promise<KnowledgeBaseEntry[]>;
+  addKnowledgeBaseEntry(stepNumber: number, title: string, content: string, fileName?: string): Promise<KnowledgeBaseEntry>;
+  deleteKnowledgeBaseEntry(id: number): Promise<void>;
+
+  // Step Advisor Configs
+  getStepAdvisorConfig(stepNumber: number): Promise<StepAdvisorConfig | undefined>;
+  getAllStepAdvisorConfigs(): Promise<StepAdvisorConfig[]>;
+  saveStepAdvisorConfig(stepNumber: number, systemPrompt: string): Promise<StepAdvisorConfig>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -63,7 +95,6 @@ export class DatabaseStorage implements IStorage {
 
   async createSession(sessionId: string): Promise<Session> {
     const [session] = await db.insert(sessions).values({ sessionId }).returning();
-    // Also create an empty context for this session
     await db.insert(schoolContexts).values({ 
       sessionId: session.id,
       desiredOutcomes: [],
@@ -71,6 +102,12 @@ export class DatabaseStorage implements IStorage {
       keyPractices: [],
       implementationSupportsNeeded: [],
       constraints: []
+    });
+    await db.insert(workflowProgress).values({
+      sessionId: session.id,
+      currentStep: 1,
+      stepsCompleted: [],
+      stepData: {},
     });
     return session;
   }
@@ -89,15 +126,6 @@ export class DatabaseStorage implements IStorage {
     const [existing] = await db.select().from(schoolContexts).where(eq(schoolContexts.sessionId, sessionId));
     if (!existing) throw new Error("Context not found");
 
-    // Merge arrays if they exist in patch, otherwise keep existing
-    // Logic: The chatbot patch overwrites or appends? 
-    // The prompt says "context_patch includes only fields the user explicitly provided".
-    // We should probably append unique values for arrays to avoid losing history if we want that,
-    // or just overwrite if the AI determines the new state. 
-    // Let's assume overwrite for simplicity of state management, AI should manage the full list if needed, 
-    // OR AI sends patches of new items.
-    // Let's implement array merging (union) for robustness.
-    
     const mergeArray = (oldArr: string[] | null, newArr: string[] | undefined) => {
       if (!newArr) return oldArr;
       if (!oldArr) return newArr;
@@ -128,8 +156,6 @@ export class DatabaseStorage implements IStorage {
   }
 
   async saveRecommendations(recs: InsertRecommendation[]): Promise<Recommendation[]> {
-    // Clear existing for this session? Maybe not, just append or replace. 
-    // Let's replace for a fresh recommendation set.
     if (recs.length > 0) {
       await db.delete(recommendations).where(eq(recommendations.sessionId, recs[0].sessionId));
       return await db.insert(recommendations).values(recs).returning();
@@ -143,8 +169,6 @@ export class DatabaseStorage implements IStorage {
       .where(eq(recommendations.sessionId, sessionId))
       .orderBy(desc(recommendations.score));
     
-    // Fetch models manually or use join. Join is better but Drizzle relationship syntax in explicit query:
-    // Simple join manually
     const result = [];
     for (const rec of recs) {
       const model = await this.getModel(rec.modelId);
@@ -167,11 +191,8 @@ export class DatabaseStorage implements IStorage {
   }
 
   async clearSessionData(sessionId: number): Promise<void> {
-    // Clear recommendations
     await db.delete(recommendations).where(eq(recommendations.sessionId, sessionId));
-    // Clear comparison selections
     await db.delete(comparisonSelections).where(eq(comparisonSelections.sessionId, sessionId));
-    // Reset school context to empty
     await db.update(schoolContexts)
       .set({
         vision: null,
@@ -192,7 +213,6 @@ export class DatabaseStorage implements IStorage {
   }
 
   async saveAdvisorConfig(systemPrompt: string): Promise<AdvisorConfig> {
-    // Check if config exists
     const existing = await this.getAdvisorConfig();
     if (existing) {
       const [updated] = await db.update(advisorConfig)
@@ -206,6 +226,164 @@ export class DatabaseStorage implements IStorage {
         .returning();
       return created;
     }
+  }
+
+  // === WORKFLOW PROGRESS ===
+  async getWorkflowProgress(sessionId: number): Promise<WorkflowProgress | undefined> {
+    const [progress] = await db.select().from(workflowProgress).where(eq(workflowProgress.sessionId, sessionId));
+    return progress;
+  }
+
+  async createWorkflowProgress(sessionId: number): Promise<WorkflowProgress> {
+    const [progress] = await db.insert(workflowProgress).values({
+      sessionId,
+      currentStep: 1,
+      stepsCompleted: [],
+      stepData: {},
+    }).returning();
+    return progress;
+  }
+
+  async updateWorkflowProgress(sessionId: number, currentStep: number, stepsCompleted: number[], stepData: StepData): Promise<WorkflowProgress> {
+    const existing = await this.getWorkflowProgress(sessionId);
+    if (!existing) {
+      const [created] = await db.insert(workflowProgress).values({
+        sessionId,
+        currentStep,
+        stepsCompleted,
+        stepData,
+      }).returning();
+      return created;
+    }
+    const [updated] = await db.update(workflowProgress)
+      .set({ currentStep, stepsCompleted, stepData, updatedAt: new Date() })
+      .where(eq(workflowProgress.id, existing.id))
+      .returning();
+    return updated;
+  }
+
+  async resetWorkflowStep(sessionId: number, stepNumber: number): Promise<void> {
+    const existing = await this.getWorkflowProgress(sessionId);
+    if (!existing) return;
+    const newCompleted = (existing.stepsCompleted as number[]).filter(s => s !== stepNumber);
+    const newStepData = { ...(existing.stepData as Record<string, any>) };
+    delete newStepData[String(stepNumber)];
+    await db.update(workflowProgress)
+      .set({ stepsCompleted: newCompleted, stepData: newStepData, updatedAt: new Date() })
+      .where(eq(workflowProgress.id, existing.id));
+    await this.clearStepConversation(sessionId, stepNumber);
+    await db.delete(stepDocuments).where(
+      and(eq(stepDocuments.sessionId, sessionId), eq(stepDocuments.stepNumber, stepNumber))
+    );
+  }
+
+  async resetAllWorkflow(sessionId: number): Promise<void> {
+    const existing = await this.getWorkflowProgress(sessionId);
+    if (existing) {
+      await db.update(workflowProgress)
+        .set({ currentStep: 1, stepsCompleted: [], stepData: {}, updatedAt: new Date() })
+        .where(eq(workflowProgress.id, existing.id));
+    }
+    await this.clearAllStepConversations(sessionId);
+    await db.delete(stepDocuments).where(eq(stepDocuments.sessionId, sessionId));
+    await db.delete(recommendations).where(eq(recommendations.sessionId, sessionId));
+    await db.delete(comparisonSelections).where(eq(comparisonSelections.sessionId, sessionId));
+  }
+
+  // === STEP CONVERSATIONS ===
+  async getStepConversations(sessionId: number, stepNumber: number): Promise<StepConversation[]> {
+    return await db.select().from(stepConversations)
+      .where(and(eq(stepConversations.sessionId, sessionId), eq(stepConversations.stepNumber, stepNumber)))
+      .orderBy(asc(stepConversations.createdAt));
+  }
+
+  async addStepMessage(sessionId: number, stepNumber: number, role: string, content: string): Promise<StepConversation> {
+    const [msg] = await db.insert(stepConversations).values({
+      sessionId, stepNumber, role, content
+    }).returning();
+    return msg;
+  }
+
+  async clearStepConversation(sessionId: number, stepNumber: number): Promise<void> {
+    await db.delete(stepConversations).where(
+      and(eq(stepConversations.sessionId, sessionId), eq(stepConversations.stepNumber, stepNumber))
+    );
+  }
+
+  async clearAllStepConversations(sessionId: number): Promise<void> {
+    await db.delete(stepConversations).where(eq(stepConversations.sessionId, sessionId));
+  }
+
+  // === STEP DOCUMENTS ===
+  async getStepDocuments(sessionId: number, stepNumber: number): Promise<StepDocument[]> {
+    return await db.select().from(stepDocuments)
+      .where(and(eq(stepDocuments.sessionId, sessionId), eq(stepDocuments.stepNumber, stepNumber)))
+      .orderBy(desc(stepDocuments.createdAt));
+  }
+
+  async getAllStepDocuments(sessionId: number): Promise<StepDocument[]> {
+    return await db.select().from(stepDocuments)
+      .where(eq(stepDocuments.sessionId, sessionId))
+      .orderBy(desc(stepDocuments.createdAt));
+  }
+
+  async addStepDocument(sessionId: number, stepNumber: number, fileName: string, fileContent: string, fileType: string): Promise<StepDocument> {
+    const [doc] = await db.insert(stepDocuments).values({
+      sessionId, stepNumber, fileName, fileContent, fileType
+    }).returning();
+    return doc;
+  }
+
+  async deleteStepDocument(id: number): Promise<void> {
+    await db.delete(stepDocuments).where(eq(stepDocuments.id, id));
+  }
+
+  // === KNOWLEDGE BASE ===
+  async getKnowledgeBase(stepNumber: number): Promise<KnowledgeBaseEntry[]> {
+    return await db.select().from(knowledgeBase)
+      .where(eq(knowledgeBase.stepNumber, stepNumber))
+      .orderBy(desc(knowledgeBase.createdAt));
+  }
+
+  async getAllKnowledgeBase(): Promise<KnowledgeBaseEntry[]> {
+    return await db.select().from(knowledgeBase).orderBy(asc(knowledgeBase.stepNumber));
+  }
+
+  async addKnowledgeBaseEntry(stepNumber: number, title: string, content: string, fileName?: string): Promise<KnowledgeBaseEntry> {
+    const [entry] = await db.insert(knowledgeBase).values({
+      stepNumber, title, content, fileName: fileName || null
+    }).returning();
+    return entry;
+  }
+
+  async deleteKnowledgeBaseEntry(id: number): Promise<void> {
+    await db.delete(knowledgeBase).where(eq(knowledgeBase.id, id));
+  }
+
+  // === STEP ADVISOR CONFIGS ===
+  async getStepAdvisorConfig(stepNumber: number): Promise<StepAdvisorConfig | undefined> {
+    const [config] = await db.select().from(stepAdvisorConfigs)
+      .where(eq(stepAdvisorConfigs.stepNumber, stepNumber));
+    return config;
+  }
+
+  async getAllStepAdvisorConfigs(): Promise<StepAdvisorConfig[]> {
+    return await db.select().from(stepAdvisorConfigs).orderBy(asc(stepAdvisorConfigs.stepNumber));
+  }
+
+  async saveStepAdvisorConfig(stepNumber: number, systemPrompt: string): Promise<StepAdvisorConfig> {
+    const existing = await this.getStepAdvisorConfig(stepNumber);
+    if (existing) {
+      const [updated] = await db.update(stepAdvisorConfigs)
+        .set({ systemPrompt, updatedAt: new Date() })
+        .where(eq(stepAdvisorConfigs.id, existing.id))
+        .returning();
+      return updated;
+    }
+    const [created] = await db.insert(stepAdvisorConfigs).values({
+      stepNumber, systemPrompt
+    }).returning();
+    return created;
   }
 }
 

@@ -3,49 +3,207 @@ import type { Server } from "http";
 import { storage } from "./storage";
 import { api, buildUrl } from "@shared/routes";
 import { z } from "zod";
-import { openai } from "./replit_integrations/audio/client"; // Use the client from audio integration which is just generic OpenAI client
-import { insertModelSchema } from "@shared/schema";
+import { openai } from "./replit_integrations/audio/client";
+import { insertModelSchema, WORKFLOW_STEPS } from "@shared/schema";
 import multer from "multer";
 import * as xlsx from "xlsx";
 
 const upload = multer({ storage: multer.memoryStorage() });
 
-// Default system prompt for the advisor (used when no custom config is set)
-function getDefaultSystemPrompt(): string {
-  return `You are a friendly school design advisor helping users find the right school model.
+function getDefaultGlobalPrompt(): string {
+  return `You are the CCL Model Recommendation Engine, a structured thinking partner for Transcend Design Partners supporting school and district communities.
 
-COMMUNICATION STYLE (CRITICAL):
-- Keep responses SHORT: 1-3 sentences max.
-- Sound like a helpful colleague having a casual chat.
-- Ask ONE open-ended question at a time.
-- Don't summarize or over-explain.
-- Match the user's energy.
+Your goal is to help Design Partners identify CCL-aligned models or point solutions that could be a good fit for a specific community's vision and context, using vetted internal CCL model data.
 
-YOUR JOB:
-Learn about their school vision through natural conversation, then recommend matching models.
+COMMUNICATION STYLE:
+- Maintain a rigorous, neutral, and facilitation-oriented tone
+- Communicate in a structured, analytical style
+- Surface criteria, constraints, and tradeoffs explicitly
+- Use structured summaries rather than story-like explanations
+- Be supportive without being validating by default
+- Challenge inputs gently by naming gaps, risks, or tensions
+- Use concise bullets or short sections to organize reasoning
+- Adopt a non-directive recommendation posture
+- Present options as provisional and context-dependent
 
-TOPICS TO EXPLORE (use their words, not yours):
-- What grades they serve
-- What outcomes they want for students
-- What learning should look like day-to-day
-- Any constraints they're working with
+WORKFLOW OVERVIEW:
+You are guiding the user through a 7-step process:
+1. School Context - Collect high-level school context
+2. Aims for Learners - Capture aspirational aims for learners
+3. Learning Experience & Practices - Capture intended learning experience and core practices
+4. Constraints - Capture constraints across supporting element domains
+5. Model Preferences - Capture model/point solution preferences
+6. Decision Frame - Confirm the synthesized decision frame
+7. Recommendations - Generate and present model recommendations
 
-HOW TO ASK:
-- Use broad, open questions. Let them tell you in their own words.
-- Don't put words in their mouth or suggest specific answers.
-- Acknowledge briefly, then ask the next thing.
+The user will move through each step, confirm their inputs, and proceed. They may go back to previous steps to make adjustments.
 
-BAD: "What do you want students to be ready for - college, careers, or life skills?"
-GOOD: "What outcomes matter most for your students?"
+IMPORTANT RULES:
+- Stay focused on the current step's purpose and required inputs
+- If the user provides information relevant to a later step, acknowledge it briefly, note that it will be incorporated later, and do not reason on it prematurely
+- Ask focused questions to fill gaps in the current step
+- Synthesize and reflect back understanding, then ask the user to confirm before marking a step complete`;
+}
 
-BAD: "Are you interested in project-based learning, personalized learning, or inquiry-based approaches?"
-GOOD: "What should learning look like day-to-day for students?"
+function getDefaultStepPrompts(): Record<number, string> {
+  return {
+    1: `STEP 1 — COLLECT HIGH-LEVEL SCHOOL CONTEXT
 
-WHEN TO RECOMMEND:
-- You have grades + at least one outcome + a sense of what learning should look like
-- OR the user asks for recommendations
+PURPOSE: Gather foundational information about the school or district community.
 
-Keep it natural. You're exploring their vision together.`;
+REQUIRED INPUTS:
+- School name, state, and district
+- Grade level / grade band
+- Community overview
+- Student demographics
+- Policy considerations
+- Existing industry, postsecondary, or community partnerships
+
+RESPONSE APPROACH:
+- Prompt the user to share as many of the required inputs as they have available
+- Review what's been provided and check for any missing required inputs
+- If something is missing, ask at most one brief follow-up question to fill the gap
+- Synthesize and reflect back understanding in 2-3 sentences, then ask the user to confirm or correct before proceeding
+
+OUTPUT: A validated School Context Summary, including any noted partnership assets.`,
+
+    2: `STEP 2 — CAPTURE ASPIRATIONAL AIMS FOR LEARNERS
+
+PURPOSE: Understand the community's vision for what learners should achieve and experience.
+
+REQUIRED INPUTS:
+- Experience Design Blueprint or design sketch (if available)
+- Learning Notebook or synthesized outputs from looking inward and outward (if available)
+- If artifacts aren't available: a short written summary of the community's aims for learners (mission, outcomes, design principles/leaps, intended learner experience)
+
+RESPONSE APPROACH:
+- Request the Blueprint and any learning artifacts
+- If required artifacts are not available, ask the Design Partner to provide a short written summary
+- Review what's provided to sense-check for:
+  * Completeness (is mission, outcomes, design principles, and experience provided)
+  * Consistency (between stated aims and prior learning)
+  * Coverage (consideration of common CCL leaps/design principles and outcomes surfaced in the CCL Design Kit)
+- If gaps, tensions, or under-specified areas are identified, ask focused clarifying questions
+- Translate confirmed aims into the shared Outcome Schema and Leaps Framework (knowledge base), preserving original intent
+- Summarize the aims in a concise, structured format and ask the Design Partner to confirm or refine
+- Ask the Design Partner to indicate relative importance for learner outcomes and design principles (Most important, Important, Nice to have)
+
+OUTPUT: A validated Aims for Learners Summary, mapped to the Outcome Schema and Leaps Framework.`,
+
+    3: `STEP 3 — CAPTURE INTENDED LEARNING EXPERIENCE & CORE PRACTICES
+
+PURPOSE: Understand what the day-to-day learning experience should look and feel like.
+
+REQUIRED INPUTS:
+- Experience Design Sketch or Blueprint
+- Documentation of current or planned practices
+
+RESPONSE APPROACH:
+- Request experience design artifacts and any practice documentation as the primary inputs
+- If required artifacts are not available, ask the Design Partner to describe the intended learning experience and core practices in writing
+- Review what's provided to sense-check for:
+  * Completeness
+  * Coverage (consideration of common CCL activities from the CCL Design Kit)
+- If gaps, tensions, or under-specified areas are identified, ask focused clarifying questions
+- Translate described practices into the shared Practices Schema (knowledge base), preserving original intent
+- Summarize in a concise, structured format and ask the Design Partner to confirm or refine
+- Ask the Design Partner to indicate relative importance (Most important, Important, Nice to have)
+
+OUTPUT: A validated Experience & Practices Summary, aligned to the Practices Schema, with noted priorities.`,
+
+    4: `STEP 4 — CAPTURE CONSTRAINTS ACROSS SUPPORTING ELEMENT DOMAINS
+
+PURPOSE: Identify constraints that may affect model selection and implementation.
+
+RESPONSE APPROACH:
+- Move through each of the seven domains one at a time
+- For each domain:
+  * If applicable, surface potential state-level policy constraints based on the school's state and ask the Design Partner to confirm whether these apply in practice
+  * Ask a lightly scaffolded question to identify any additional local constraints relevant to that domain
+  * Record stated constraints or note when none are present
+- After all domains are covered:
+  * Synthesize a consolidated list of constraints
+  * Ask the Design Partner to identify which constraints should be treated as roadblocks (non-negotiables)
+  * Treat remaining constraints as watch-outs
+- Do not assess implications for specific models at this stage
+
+DOMAINS TO COVER:
+1. Curriculum, Instruction & Assessment
+2. School Community & Culture
+3. Adult Roles, Hiring & Learning
+4. Schedule & Use of Time
+5. Family & Community Partnerships
+6. Technology & Infrastructure
+7. Continuous Improvement Practices
+
+OUTPUT: A Constraints Summary, organized by domain, with any non-negotiable roadblock constraints clearly noted.`,
+
+    5: `STEP 5 — CAPTURE MODEL / POINT SOLUTION PREFERENCES
+
+PURPOSE: Understand preferences for implementation support, evidence level, and solution architecture.
+
+RESPONSE APPROACH:
+Ask for preferences across three dimensions, using lightweight option prompts:
+
+1. Implementation posture — what kind of support is preferred? (1 or more)
+   - 1:1 coaching/consulting support
+   - Professional development (PD)
+   - Self-serve resources to implement independently
+   - Opportunity to observe / see the model in action
+
+2. Evidence threshold — how established should options be?
+   - Well established
+   - Open to newer / emerging models with early proof points
+
+3. Solution architecture — how should solutions be composed?
+   - Prefer a single comprehensive model
+   - Open to stitching together compatible models / point solutions
+
+For each dimension, ask the Design Partner to tag the preference as Need to have / Important / Nice to have (or "no strong preference").
+Summarize back and confirm before proceeding.
+
+OUTPUT: A Solution Preferences Summary across the three dimensions, including priority tags and any nuances.`,
+
+    6: `STEP 6 — CONFIRM DECISION FRAME
+
+PURPOSE: Synthesize all prior inputs into a single decision frame for the user to confirm.
+
+RESPONSE APPROACH:
+- Synthesize the outputs from prior steps into a concise decision frame, including:
+  * Aims for learners (with relative importance noted)
+  * Intended experience and core practices (with must-haves highlighted)
+  * Constraints (with non-negotiables clearly identified)
+  * Model / solution preferences (implementation posture, evidence threshold, solution architecture)
+- Present the decision frame in a compact, structured format (e.g., short sections or a simple table)
+- Ask the Design Partner to confirm whether this frame is accurate or make small adjustments
+- Do not introduce new inputs or resolve tradeoffs at this stage
+
+OUTPUT: A confirmed Decision Frame Summary that will be used to guide model and point-solution recommendations.`,
+
+    7: `STEP 7 — GENERATE RECOMMENDATIONS
+
+PURPOSE: Present 3-5 strong-fit options from the vetted CCL model set.
+
+RESPONSE APPROACH:
+- Use the confirmed Decision Frame to identify 3-5 strong-fit options from the vetted CCL model set
+- Only include options that:
+  * Align with the target grade band
+  * Meaningfully support prioritized aims for learners
+  * Align with the intended practices and learning experience
+  * Do not violate confirmed non-negotiable constraints
+- Present recommendations as unordered options, emphasizing fit and tradeoffs rather than a single "best" choice
+- If insufficient information exists to make a responsible recommendation, pause and ask for clarification
+
+OUTPUT: A Recommendations Table with columns:
+- Model / Solution: Name
+- Overview: Brief description
+- Aims alignment: Summary of aligned learner outcomes and leaps
+- Practices & Experience Alignment: Summary of aligned practices
+- Watch-outs: Relevant constraints or preference tensions
+- Implementation Supports: Available supports (coaching, PD, etc.)
+- Evidence & Resources: Proof points, example schools, or links
+- Potential Complements (optional): Other models that could round out gaps`,
+  };
 }
 
 export async function registerRoutes(
@@ -83,7 +241,6 @@ export async function registerRoutes(
           imageUrl: row["Image URL"] || null,
         };
 
-        // Validate and save
         const validated = insertModelSchema.parse(modelData);
         const saved = await storage.createModel(validated);
         importedModels.push(saved);
@@ -138,7 +295,6 @@ export async function registerRoutes(
     res.json(context);
   });
 
-  // Clear session (start fresh)
   app.post(api.sessions.clear.path, async (req, res) => {
     try {
       const sessionIdStr = req.params.sessionId as string;
@@ -177,7 +333,6 @@ export async function registerRoutes(
       const session = await storage.getSession(sessionIdStr);
       if (!session) return res.status(404).json({ message: "Session not found" });
       
-      // Mark context as ready and generate recommendations
       await storage.markContextReady(session.id);
       await generateRecommendations(session.id);
       
@@ -188,7 +343,7 @@ export async function registerRoutes(
     }
   });
 
-  // === CHAT ADVISOR ===
+  // === CHAT ADVISOR (legacy) ===
   app.post(api.chat.advisor.path, async (req, res) => {
     try {
       const { sessionId, message, conversationHistory = [] } = api.chat.advisor.input.parse(req.body);
@@ -198,14 +353,12 @@ export async function registerRoutes(
       const context = await storage.getSchoolContext(session.id);
       if (!context) return res.status(404).json({ message: "Context not found" });
 
-      // Get recommendations and comparison selections
-      const recommendations = await storage.getRecommendations(session.id);
+      const recs = await storage.getRecommendations(session.id);
       const comparisonData = await storage.getComparisonSelection(session.id);
       
-      // Build comparison models info
       let comparisonModelsInfo = "None selected";
       if (comparisonData && comparisonData.modelIds && comparisonData.modelIds.length > 0) {
-        const comparisonModels = recommendations
+        const comparisonModels = recs
           .filter(r => comparisonData.modelIds.includes(r.modelId))
           .map(r => r.model);
         
@@ -216,19 +369,16 @@ export async function registerRoutes(
         }
       }
 
-      // Build recommended models info
       let recommendedModelsInfo = "None yet";
-      if (recommendations.length > 0) {
-        recommendedModelsInfo = recommendations.map(r => 
+      if (recs.length > 0) {
+        recommendedModelsInfo = recs.map(r => 
           `\n  - ${r.model.name} (Score: ${r.score}%): ${r.rationale}`
         ).join("");
       }
 
-      // Get the custom system prompt from config, or use default
       const config = await storage.getAdvisorConfig();
-      const basePrompt = config?.systemPrompt || getDefaultSystemPrompt();
+      const basePrompt = config?.systemPrompt || getDefaultGlobalPrompt();
       
-      // Build the full system prompt with current context injected
       const systemPrompt = `
 ${basePrompt}
 
@@ -256,22 +406,19 @@ The JSON object must have these exact keys:
 - "should_compare": boolean, set to true if the user asks to compare models
       `;
 
-      // Build messages array with conversation history
       const messages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [
         { role: "system", content: systemPrompt },
       ];
       
-      // Add conversation history (limited to last 10 exchanges for context window)
       const recentHistory = conversationHistory.slice(-20);
       for (const msg of recentHistory) {
         messages.push({ role: msg.role, content: msg.content });
       }
       
-      // Add current user message
       messages.push({ role: "user", content: message });
       
       const completion = await openai.chat.completions.create({
-        model: "gpt-5.1",
+        model: "gpt-4o",
         messages,
         response_format: { type: "json_object" },
       });
@@ -281,13 +428,9 @@ The JSON object must have these exact keys:
       
       const parsedResponse = JSON.parse(responseContent);
       
-      // Update context with patch
       if (parsedResponse.context_patch) {
         await storage.updateSchoolContext(session.id, parsedResponse.context_patch);
       }
-      
-      // Don't auto-generate recommendations - let user trigger manually via the button
-      // Just indicate in the response that enough context has been gathered
 
       res.json(parsedResponse);
 
@@ -297,10 +440,262 @@ The JSON object must have these exact keys:
     }
   });
 
+  // === STEP-BASED CHAT ADVISOR ===
+  app.post(api.chat.stepAdvisor.path, async (req, res) => {
+    try {
+      const { sessionId, stepNumber, message } = api.chat.stepAdvisor.input.parse(req.body);
+      const session = await storage.getSession(sessionId);
+      if (!session) return res.status(404).json({ message: "Session not found" });
+
+      const progress = await storage.getWorkflowProgress(session.id);
+      if (!progress) return res.status(404).json({ message: "Workflow not found" });
+
+      await storage.addStepMessage(session.id, stepNumber, "user", message);
+
+      const globalConfig = await storage.getAdvisorConfig();
+      const globalPrompt = globalConfig?.systemPrompt || getDefaultGlobalPrompt();
+
+      const stepConfig = await storage.getStepAdvisorConfig(stepNumber);
+      const defaultStepPrompts = getDefaultStepPrompts();
+      const stepPrompt = stepConfig?.systemPrompt || defaultStepPrompts[stepNumber] || "";
+
+      const kbEntries = await storage.getKnowledgeBase(stepNumber);
+      let knowledgeBaseContext = "";
+      if (kbEntries.length > 0) {
+        knowledgeBaseContext = "\n\n=== KNOWLEDGE BASE FOR THIS STEP ===\n" +
+          kbEntries.map(e => `--- ${e.title} ---\n${e.content}`).join("\n\n");
+      }
+
+      const stepDocs = await storage.getStepDocuments(session.id, stepNumber);
+      let uploadedDocsContext = "";
+      if (stepDocs.length > 0) {
+        uploadedDocsContext = "\n\n=== USER-UPLOADED DOCUMENTS FOR THIS STEP ===\n" +
+          stepDocs.map(d => `--- ${d.fileName} ---\n${d.fileContent}`).join("\n\n");
+      }
+
+      const allStepData = progress.stepData as Record<string, any>;
+      let priorStepsContext = "";
+      for (let i = 1; i < stepNumber; i++) {
+        const sd = allStepData[String(i)];
+        if (sd) {
+          const stepDef = WORKFLOW_STEPS.find(s => s.number === i);
+          priorStepsContext += `\n--- Step ${i}: ${stepDef?.label || ""} ---\n${typeof sd === 'string' ? sd : JSON.stringify(sd, null, 2)}`;
+        }
+      }
+
+      const currentStepData = allStepData[String(stepNumber)];
+      let currentStepContext = "";
+      if (currentStepData) {
+        currentStepContext = `\n\n=== CURRENT STEP DATA (captured so far) ===\n${typeof currentStepData === 'string' ? currentStepData : JSON.stringify(currentStepData, null, 2)}`;
+      }
+
+      let modelsContext = "";
+      if (stepNumber === 7) {
+        const allModels = await storage.getAllModels();
+        if (allModels.length > 0) {
+          modelsContext = "\n\n=== AVAILABLE CCL MODELS ===\n" +
+            allModels.map(m => `- ${m.name} (Grades: ${m.grades}): ${m.description}\n  Outcomes: ${m.outcomeTypes}\n  Practices: ${m.keyPractices}\n  Supports: ${m.implementationSupports}\n  Link: ${m.link}`).join("\n\n");
+        }
+      }
+
+      const systemPrompt = `${globalPrompt}
+
+=== CURRENT STEP INSTRUCTIONS ===
+${stepPrompt}
+${knowledgeBaseContext}
+${uploadedDocsContext}
+${priorStepsContext ? `\n=== PRIOR STEPS SUMMARY ===\n${priorStepsContext}` : ""}
+${currentStepContext}
+${modelsContext}
+
+=== RESPONSE FORMAT ===
+You MUST respond in valid JSON format ONLY. Do not include any text outside the JSON object.
+The JSON object must have these exact keys:
+- "assistant_message": string with your response to the user (use markdown formatting for readability)
+- "step_data_patch": object containing any structured data extracted from this conversation that should be saved for this step. Use descriptive keys. For example: {"school_name": "...", "grade_band": "...", "demographics": "..."}. Set to null if no new data was extracted.
+- "is_step_complete": boolean, set to true ONLY when you have gathered all required inputs for this step AND the user has confirmed the summary`;
+
+      const conversationHistory = await storage.getStepConversations(session.id, stepNumber);
+      const messages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [
+        { role: "system", content: systemPrompt },
+      ];
+
+      const recentHistory = conversationHistory.slice(-30);
+      for (const msg of recentHistory) {
+        messages.push({ role: msg.role as "user" | "assistant", content: msg.content });
+      }
+
+      const completion = await openai.chat.completions.create({
+        model: "gpt-4o",
+        messages,
+        response_format: { type: "json_object" },
+      });
+
+      const responseContent = completion.choices[0].message.content;
+      if (!responseContent) throw new Error("No response from AI");
+
+      const parsedResponse = JSON.parse(responseContent);
+
+      await storage.addStepMessage(session.id, stepNumber, "assistant", parsedResponse.assistant_message);
+
+      if (parsedResponse.step_data_patch && Object.keys(parsedResponse.step_data_patch).length > 0) {
+        const currentData = { ...(progress.stepData as Record<string, any>) };
+        const existingStepData = currentData[String(stepNumber)] || {};
+        currentData[String(stepNumber)] = { ...existingStepData, ...parsedResponse.step_data_patch };
+        await storage.updateWorkflowProgress(session.id, progress.currentStep, progress.stepsCompleted as number[], currentData);
+      }
+
+      res.json(parsedResponse);
+
+    } catch (err) {
+      console.error("Step chat error:", err);
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // === WORKFLOW PROGRESS ===
+  app.get(api.workflow.getProgress.path, async (req, res) => {
+    try {
+      const session = await storage.getSession(req.params.sessionId as string);
+      if (!session) return res.status(404).json({ message: "Session not found" });
+
+      let progress = await storage.getWorkflowProgress(session.id);
+      if (!progress) {
+        progress = await storage.createWorkflowProgress(session.id);
+      }
+      res.json(progress);
+    } catch (err) {
+      res.status(500).json({ message: "Failed to get workflow progress" });
+    }
+  });
+
+  app.post(api.workflow.updateProgress.path, async (req, res) => {
+    try {
+      const session = await storage.getSession(req.params.sessionId as string);
+      if (!session) return res.status(404).json({ message: "Session not found" });
+
+      const { currentStep, stepsCompleted, stepData } = api.workflow.updateProgress.input.parse(req.body);
+      const progress = await storage.updateWorkflowProgress(session.id, currentStep, stepsCompleted, stepData);
+      res.json(progress);
+    } catch (err) {
+      res.status(500).json({ message: "Failed to update workflow progress" });
+    }
+  });
+
+  app.post(api.workflow.confirmStep.path, async (req, res) => {
+    try {
+      const session = await storage.getSession(req.params.sessionId as string);
+      if (!session) return res.status(404).json({ message: "Session not found" });
+
+      const { stepNumber } = api.workflow.confirmStep.input.parse(req.body);
+      const progress = await storage.getWorkflowProgress(session.id);
+      if (!progress) return res.status(404).json({ message: "Workflow not found" });
+
+      const completed = Array.from(new Set([...(progress.stepsCompleted as number[]), stepNumber]));
+      const nextStep = Math.min(stepNumber + 1, 7);
+      await storage.updateWorkflowProgress(session.id, nextStep, completed, progress.stepData as Record<string, any>);
+      res.json({ message: "Step confirmed", nextStep });
+    } catch (err) {
+      res.status(500).json({ message: "Failed to confirm step" });
+    }
+  });
+
+  app.post(api.workflow.resetStep.path, async (req, res) => {
+    try {
+      const session = await storage.getSession(req.params.sessionId as string);
+      if (!session) return res.status(404).json({ message: "Session not found" });
+
+      const { stepNumber } = api.workflow.resetStep.input.parse(req.body);
+      await storage.resetWorkflowStep(session.id, stepNumber);
+      res.json({ message: "Step reset" });
+    } catch (err) {
+      res.status(500).json({ message: "Failed to reset step" });
+    }
+  });
+
+  app.post(api.workflow.resetAll.path, async (req, res) => {
+    try {
+      const session = await storage.getSession(req.params.sessionId as string);
+      if (!session) return res.status(404).json({ message: "Session not found" });
+
+      await storage.resetAllWorkflow(session.id);
+      res.json({ message: "All steps reset" });
+    } catch (err) {
+      res.status(500).json({ message: "Failed to reset workflow" });
+    }
+  });
+
+  // === STEP CONVERSATIONS ===
+  app.get(api.workflow.getConversation.path, async (req, res) => {
+    try {
+      const session = await storage.getSession(req.params.sessionId as string);
+      if (!session) return res.status(404).json({ message: "Session not found" });
+
+      const stepNumber = Number(req.params.stepNumber);
+      const messages = await storage.getStepConversations(session.id, stepNumber);
+      res.json(messages);
+    } catch (err) {
+      res.status(500).json({ message: "Failed to get conversation" });
+    }
+  });
+
+  // === STEP DOCUMENTS ===
+  app.get(api.workflow.getDocuments.path, async (req, res) => {
+    try {
+      const session = await storage.getSession(req.params.sessionId as string);
+      if (!session) return res.status(404).json({ message: "Session not found" });
+
+      const stepNumber = Number(req.params.stepNumber);
+      const docs = await storage.getStepDocuments(session.id, stepNumber);
+      res.json(docs);
+    } catch (err) {
+      res.status(500).json({ message: "Failed to get documents" });
+    }
+  });
+
+  app.post("/api/sessions/:sessionId/workflow/documents/:stepNumber/upload", upload.single("file"), async (req, res) => {
+    try {
+      const session = await storage.getSession(req.params.sessionId as string);
+      if (!session) return res.status(404).json({ message: "Session not found" });
+      if (!req.file) return res.status(400).json({ message: "No file uploaded" });
+
+      const stepNumber = Number(req.params.stepNumber);
+      const fileName = req.file.originalname;
+      const fileType = req.file.mimetype;
+      
+      let fileContent = "";
+      if (fileType.includes("spreadsheet") || fileType.includes("excel") || fileName.endsWith(".xlsx") || fileName.endsWith(".xls")) {
+        const workbook = xlsx.read(req.file.buffer, { type: "buffer" });
+        const sheets = workbook.SheetNames.map(name => {
+          const sheet = workbook.Sheets[name];
+          return `Sheet: ${name}\n${xlsx.utils.sheet_to_csv(sheet)}`;
+        });
+        fileContent = sheets.join("\n\n");
+      } else {
+        fileContent = req.file.buffer.toString("utf-8");
+      }
+
+      const doc = await storage.addStepDocument(session.id, stepNumber, fileName, fileContent, fileType);
+      res.json(doc);
+    } catch (err) {
+      console.error("Upload error:", err);
+      res.status(500).json({ message: "Failed to upload document" });
+    }
+  });
+
+  app.delete("/api/sessions/:sessionId/workflow/documents/:docId", async (req, res) => {
+    try {
+      await storage.deleteStepDocument(Number(req.params.docId));
+      res.json({ message: "Document deleted" });
+    } catch (err) {
+      res.status(500).json({ message: "Failed to delete document" });
+    }
+  });
+
   // === MODELS ===
   app.get(api.models.list.path, async (req, res) => {
-    const models = await storage.getAllModels();
-    res.json(models);
+    const allModels = await storage.getAllModels();
+    res.json(allModels);
   });
 
   app.get(api.models.get.path, async (req, res) => {
@@ -310,14 +705,26 @@ The JSON object must have these exact keys:
   });
 
   app.post(api.models.recommend.path, async (req, res) => {
-    const sessionIdStr = req.params.sessionId as string;
-    const session = await storage.getSession(sessionIdStr);
-    if (!session) return res.status(404).json({ message: "Session not found" });
-    
-    // Return existing recommendations - don't auto-generate
-    // User must click "Generate Recommendations" button to trigger generation
-    const recs = await storage.getRecommendations(session.id);
-    res.json(recs);
+    try {
+      const sessionIdStr = req.params.sessionId as string;
+      const session = await storage.getSession(sessionIdStr);
+      if (!session) return res.status(404).json({ message: "Session not found" });
+      
+      await generateRecommendations(session.id);
+      
+      const recs = await storage.getRecommendations(session.id);
+      
+      const recsWithModels = [];
+      for (const rec of recs) {
+        const model = await storage.getModel(rec.modelId);
+        recsWithModels.push({ ...rec, model });
+      }
+      
+      res.json(recsWithModels);
+    } catch (err) {
+      console.error("Recommendation error:", err);
+      res.status(500).json({ message: "Failed to generate recommendations" });
+    }
   });
 
   // === COMPARISON ===
@@ -349,17 +756,44 @@ The JSON object must have these exact keys:
 
   // === HELPER: Recommendation Engine ===
   async function generateRecommendations(sessionId: number) {
-    const context = await storage.getSchoolContext(sessionId);
     const allModels = await storage.getAllModels();
+    if (allModels.length === 0) return;
+
+    let context = await storage.getSchoolContext(sessionId);
+    
+    if (!context) {
+      const progress = await storage.getWorkflowProgress(sessionId);
+      if (progress && progress.stepData) {
+        const sd = progress.stepData as Record<string, any>;
+        const allValues = Object.values(sd).reduce((acc: any, stepObj: any) => {
+          if (typeof stepObj === 'object' && stepObj !== null) {
+            Object.assign(acc, stepObj);
+          }
+          return acc;
+        }, {});
+        
+        context = {
+          id: 0,
+          sessionId,
+          vision: allValues.vision || allValues.school_vision || "",
+          desiredOutcomes: allValues.desired_outcomes || allValues.aims || allValues.outcomes || [],
+          gradeBands: allValues.grade_bands || allValues.grade_band ? [allValues.grade_band] : allValues.grades || [],
+          keyPractices: allValues.key_practices || allValues.practices || allValues.learning_practices || [],
+          implementationSupportsNeeded: allValues.implementation_supports || allValues.supports || [],
+          constraints: allValues.constraints || [],
+          notes: allValues.notes || "",
+          updatedAt: new Date(),
+        } as any;
+      }
+    }
+    
     if (!context) return;
 
-    // Helper: check if any keyword from user input matches model text
     const fuzzyMatch = (userTerms: string[], modelText: string): string[] => {
       const modelLower = modelText.toLowerCase();
       const matches: string[] = [];
       for (const term of userTerms) {
         const words = term.toLowerCase().split(/\s+/);
-        // Match if any significant word (3+ chars) appears in model text
         for (const word of words) {
           if (word.length >= 3 && modelLower.includes(word)) {
             matches.push(term);
@@ -372,15 +806,11 @@ The JSON object must have these exact keys:
 
     const scoredModels = allModels.map(model => {
       let score = 0;
-      let maxScore = 0;
       const rationaleParts: string[] = [];
 
-      // Grade match (30 points possible)
-      maxScore += 30;
       const modelGrades = model.grades.toLowerCase();
       const gradeMatches = context.gradeBands?.filter(g => {
         const gradeLower = g.toLowerCase();
-        // Match common grade formats: "9-12", "K-5", "6-8", "high", "middle", "elementary"
         return modelGrades.includes(gradeLower) || 
                modelGrades.includes(gradeLower.replace("-", " ")) ||
                (gradeLower.includes("9") && modelGrades.includes("high")) ||
@@ -392,8 +822,6 @@ The JSON object must have these exact keys:
         rationaleParts.push(`Serves ${gradeMatches.join(", ")} grades`);
       }
 
-      // Outcome alignment (35 points possible)
-      maxScore += 35;
       const allModelText = `${model.outcomeTypes} ${model.description} ${model.keyPractices}`.toLowerCase();
       const outcomeMatches = fuzzyMatch(context.desiredOutcomes || [], allModelText);
       if (outcomeMatches.length > 0) {
@@ -402,8 +830,6 @@ The JSON object must have these exact keys:
         rationaleParts.push(`Aligns with: ${outcomeMatches.slice(0, 2).join(", ")}`);
       }
 
-      // Practice alignment (35 points possible)
-      maxScore += 35;
       const practiceMatches = fuzzyMatch(context.keyPractices || [], allModelText);
       if (practiceMatches.length > 0) {
         const practiceScore = Math.min(35, practiceMatches.length * 12);
@@ -411,7 +837,6 @@ The JSON object must have these exact keys:
         rationaleParts.push(`Supports ${practiceMatches.slice(0, 2).join(", ")}`);
       }
 
-      // Return raw score (not percentage yet)
       return {
         sessionId,
         modelId: model.id,
@@ -421,19 +846,14 @@ The JSON object must have these exact keys:
       };
     });
 
-    // Sort by raw score
     scoredModels.sort((a, b) => b.rawScore - a.rawScore);
     
-    // Take top 10 and normalize to percentages
     const topRecs = scoredModels.slice(0, 10);
     const bestScore = topRecs.length > 0 ? topRecs[0].rawScore : 0;
     
-    // Normalize: best match = 100% (if it matched anything), others relative
-    // If best score is 0 (no matches), all get 0%
     const normalizedRecs = topRecs.map(rec => {
       let finalScore = 0;
       if (bestScore > 0 && rec.matchCount > 0) {
-        // Normalize to 100% for best match
         finalScore = Math.round((rec.rawScore / bestScore) * 100);
       }
       return {
@@ -450,7 +870,7 @@ The JSON object must have these exact keys:
   // === ADMIN CONFIG ===
   app.get(api.admin.getConfig.path, async (req, res) => {
     const config = await storage.getAdvisorConfig();
-    const defaultPrompt = getDefaultSystemPrompt();
+    const defaultPrompt = getDefaultGlobalPrompt();
     res.json({
       systemPrompt: config?.systemPrompt || defaultPrompt,
       defaultPrompt: defaultPrompt,
@@ -466,6 +886,90 @@ The JSON object must have these exact keys:
     } catch (err) {
       console.error("Save config error:", err);
       res.status(400).json({ message: "Invalid input" });
+    }
+  });
+
+  // === STEP ADVISOR CONFIGS ===
+  app.get(api.admin.getStepConfigs.path, async (req, res) => {
+    try {
+      const configs = await storage.getAllStepAdvisorConfigs();
+      const defaults = getDefaultStepPrompts();
+      const result = WORKFLOW_STEPS.map(step => {
+        const saved = configs.find(c => c.stepNumber === step.number);
+        return {
+          stepNumber: step.number,
+          stepLabel: step.label,
+          systemPrompt: saved?.systemPrompt || defaults[step.number] || "",
+          defaultPrompt: defaults[step.number] || "",
+          updatedAt: saved?.updatedAt?.toISOString() || null,
+          isCustom: !!saved,
+        };
+      });
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ message: "Failed to get step configs" });
+    }
+  });
+
+  app.post(api.admin.saveStepConfig.path, async (req, res) => {
+    try {
+      const stepNumber = Number(req.params.stepNumber);
+      const { systemPrompt } = api.admin.saveStepConfig.input.parse(req.body);
+      const config = await storage.saveStepAdvisorConfig(stepNumber, systemPrompt);
+      res.json(config);
+    } catch (err) {
+      res.status(400).json({ message: "Invalid input" });
+    }
+  });
+
+  // === KNOWLEDGE BASE ===
+  app.get(api.admin.getKnowledgeBase.path, async (req, res) => {
+    try {
+      const stepNum = req.query.stepNumber ? Number(req.query.stepNumber) : undefined;
+      const entries = stepNum ? await storage.getKnowledgeBase(stepNum) : await storage.getAllKnowledgeBase();
+      res.json(entries);
+    } catch (err) {
+      res.status(500).json({ message: "Failed to get knowledge base" });
+    }
+  });
+
+  app.post(api.admin.addKnowledgeBase.path, upload.single("file"), async (req, res) => {
+    try {
+      const stepNumber = Number(req.body.stepNumber);
+      const title = req.body.title as string;
+      
+      let content = req.body.content as string || "";
+      let fileName = req.body.fileName as string || undefined;
+
+      if (req.file) {
+        fileName = req.file.originalname;
+        const fileType = req.file.mimetype;
+        if (fileType.includes("spreadsheet") || fileType.includes("excel") || fileName.endsWith(".xlsx") || fileName.endsWith(".xls")) {
+          const workbook = xlsx.read(req.file.buffer, { type: "buffer" });
+          const sheets = workbook.SheetNames.map(name => {
+            const sheet = workbook.Sheets[name];
+            return `Sheet: ${name}\n${xlsx.utils.sheet_to_csv(sheet)}`;
+          });
+          content = sheets.join("\n\n");
+        } else {
+          content = req.file.buffer.toString("utf-8");
+        }
+      }
+
+      const entry = await storage.addKnowledgeBaseEntry(stepNumber, title, content, fileName);
+      res.json(entry);
+    } catch (err) {
+      console.error("Knowledge base add error:", err);
+      res.status(500).json({ message: "Failed to add knowledge base entry" });
+    }
+  });
+
+  app.delete(api.admin.deleteKnowledgeBase.path, async (req, res) => {
+    try {
+      await storage.deleteKnowledgeBaseEntry(Number(req.params.id));
+      res.json({ message: "Knowledge base entry deleted" });
+    } catch (err) {
+      res.status(500).json({ message: "Failed to delete knowledge base entry" });
     }
   });
 
