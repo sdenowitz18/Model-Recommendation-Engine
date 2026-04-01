@@ -1,21 +1,23 @@
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, buildUrl, type ChatAdvisorResponse } from "@shared/routes";
+import { useQuery, useMutation } from "@tanstack/react-query";
+import { api, buildUrl } from "@shared/routes";
 import { useState, useEffect } from "react";
 import { v4 as uuidv4 } from "uuid";
 
 // === SESSION MANAGEMENT ===
 
-export function useSession() {
-  const [sessionId, setSessionId] = useState<string | null>(() => {
-    return localStorage.getItem("school_advisor_session_id");
-  });
+/**
+ * Initialize and ensure a specific session exists on the backend.
+ * @param sessionId - explicit session UUID (from URL).
+ */
+export function useSession(sessionId?: string | null) {
+  const [resolvedId, setResolvedId] = useState<string | null>(sessionId ?? null);
 
   const createSessionMutation = useMutation({
-    mutationFn: async (newSessionId: string) => {
+    mutationFn: async (id: string) => {
       const res = await fetch(api.sessions.create.path, {
         method: api.sessions.create.method,
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId: newSessionId }),
+        body: JSON.stringify({ sessionId: id, focusArea: "ccl" }),
         credentials: "include",
       });
       if (!res.ok) throw new Error("Failed to create session");
@@ -23,86 +25,23 @@ export function useSession() {
     },
   });
 
-  // Initialize session if missing
   useEffect(() => {
-    if (!sessionId) {
+    if (sessionId) {
+      setResolvedId(sessionId);
+      createSessionMutation.mutate(sessionId);
+    } else if (!resolvedId) {
       const newId = uuidv4();
-      localStorage.setItem("school_advisor_session_id", newId);
-      setSessionId(newId);
+      setResolvedId(newId);
       createSessionMutation.mutate(newId);
     } else {
-      // Ensure session exists on backend even if local storage has it
-      createSessionMutation.mutate(sessionId);
+      createSessionMutation.mutate(resolvedId);
     }
-  }, []); // Run once on mount
+  }, [sessionId]);
 
-  return { sessionId, isLoading: createSessionMutation.isPending };
+  return { sessionId: resolvedId, isLoading: createSessionMutation.isPending };
 }
 
-export function useSessionContext(sessionId: string | null) {
-  return useQuery({
-    queryKey: [api.sessions.getContext.path, sessionId],
-    queryFn: async () => {
-      if (!sessionId) return null;
-      const url = buildUrl(api.sessions.getContext.path, { sessionId });
-      const res = await fetch(url, { credentials: "include" });
-      if (res.status === 404) return null;
-      if (!res.ok) throw new Error("Failed to fetch context");
-      return api.sessions.getContext.responses[200].parse(await res.json());
-    },
-    enabled: !!sessionId,
-  });
-}
-
-// === CHAT ===
-
-export function useChatAdvisor() {
-  const queryClient = useQueryClient();
-
-  return useMutation({
-    mutationFn: async ({ sessionId, message, conversationHistory }: { 
-      sessionId: string; 
-      message: string; 
-      conversationHistory?: Array<{ role: "user" | "assistant"; content: string }>;
-    }) => {
-      const res = await fetch(api.chat.advisor.path, {
-        method: api.chat.advisor.method,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId, message, conversationHistory }),
-        credentials: "include",
-      });
-      if (!res.ok) throw new Error("Failed to send message");
-      return api.chat.advisor.responses[200].parse(await res.json());
-    },
-    onSuccess: (data, variables) => {
-      // Invalidate context to update the UI if new info was extracted
-      queryClient.invalidateQueries({ queryKey: [api.sessions.getContext.path, variables.sessionId] });
-      
-      // If recommendations are ready, invalidate that query
-      if (data.should_recommend) {
-        queryClient.invalidateQueries({ queryKey: [api.models.recommend.path, variables.sessionId] });
-      }
-      
-      // If comparison requested, invalidate that query
-      if (data.should_compare) {
-        queryClient.invalidateQueries({ queryKey: [api.comparison.get.path, variables.sessionId] });
-      }
-    },
-  });
-}
-
-// === MODELS & RECOMMENDATIONS ===
-
-export function useModels() {
-  return useQuery({
-    queryKey: [api.models.list.path],
-    queryFn: async () => {
-      const res = await fetch(api.models.list.path, { credentials: "include" });
-      if (!res.ok) throw new Error("Failed to fetch models");
-      return api.models.list.responses[200].parse(await res.json());
-    },
-  });
-}
+// === MODELS ===
 
 export function useModel(id: number) {
   return useQuery({
@@ -114,81 +53,5 @@ export function useModel(id: number) {
       return api.models.get.responses[200].parse(await res.json());
     },
     enabled: !!id,
-  });
-}
-
-export function useRecommendations(sessionId: string | null, enabled: boolean) {
-  return useQuery({
-    queryKey: [api.models.recommend.path, sessionId],
-    queryFn: async () => {
-      if (!sessionId) return [];
-      const url = buildUrl(api.models.recommend.path, { sessionId });
-      const res = await fetch(url, { method: "POST", credentials: "include" }); // POST to trigger generation if missing
-      if (!res.ok) throw new Error("Failed to fetch recommendations");
-      return api.models.recommend.responses[200].parse(await res.json());
-    },
-    enabled: !!sessionId && enabled,
-    staleTime: 1000 * 60 * 5, // 5 minutes
-  });
-}
-
-// === COMPARISON ===
-
-export function useSaveComparison() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: async ({ sessionId, modelIds }: { sessionId: string; modelIds: number[] }) => {
-      const url = buildUrl(api.comparison.save.path, { sessionId });
-      const res = await fetch(url, {
-        method: api.comparison.save.method,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ modelIds }),
-        credentials: "include",
-      });
-      if (!res.ok) throw new Error("Failed to save comparison");
-      return api.comparison.save.responses[200].parse(await res.json());
-    },
-    onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({ queryKey: [api.comparison.get.path, variables.sessionId] });
-    },
-  });
-}
-
-export function useComparison(sessionId: string | null) {
-  return useQuery({
-    queryKey: [api.comparison.get.path, sessionId],
-    queryFn: async () => {
-      if (!sessionId) return null;
-      const url = buildUrl(api.comparison.get.path, { sessionId });
-      const res = await fetch(url, { credentials: "include" });
-      if (!res.ok) throw new Error("Failed to fetch comparison");
-      return api.comparison.get.responses[200].parse(await res.json());
-    },
-    enabled: !!sessionId,
-  });
-}
-
-// === CLEAR SESSION ===
-
-export function useClearSession() {
-  const queryClient = useQueryClient();
-  
-  return useMutation({
-    mutationFn: async (sessionId: string) => {
-      const url = buildUrl(api.sessions.clear.path, { sessionId });
-      const res = await fetch(url, { method: "POST", credentials: "include" });
-      if (!res.ok) throw new Error("Failed to clear session");
-      return res.json();
-    },
-    onSuccess: (_, sessionId) => {
-      // Clear cached data (setQueryData) AND invalidate to refetch
-      queryClient.setQueryData([api.models.recommend.path, sessionId], []);
-      queryClient.setQueryData([api.comparison.get.path, sessionId], { selection: null, models: [] });
-      
-      // Invalidate context to refetch the reset state
-      queryClient.invalidateQueries({ queryKey: [api.sessions.getContext.path, sessionId] });
-      queryClient.invalidateQueries({ queryKey: [api.models.recommend.path, sessionId] });
-      queryClient.invalidateQueries({ queryKey: [api.comparison.get.path, sessionId] });
-    },
   });
 }

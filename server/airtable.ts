@@ -1,20 +1,9 @@
 import type { InsertModel } from "@shared/schema";
-
-const AIRTABLE_API_TOKEN = process.env.AIRTABLE_API_TOKEN;
-const AIRTABLE_BASE_ID = process.env.AIRTABLE_BASE_ID;
-const AIRTABLE_TABLE_ID = process.env.AIRTABLE_TABLE_ID;
+import { storage } from "./storage";
 
 interface AirtableRecord {
   id: string;
-  fields: {
-    "Model Name"?: string;
-    "Grades"?: string;
-    "Description"?: string;
-    "Model Link"?: string;
-    "Outcome Types"?: string | string[];
-    "Key Practices"?: string | string[];
-    "Implementation Supports"?: string | string[];
-  };
+  fields: Record<string, any>;
 }
 
 interface AirtableResponse {
@@ -28,23 +17,43 @@ function normalizeToString(value: string | string[] | undefined): string {
   return value;
 }
 
-export async function fetchModelsFromAirtable(): Promise<InsertModel[]> {
-  if (!AIRTABLE_API_TOKEN || !AIRTABLE_BASE_ID || !AIRTABLE_TABLE_ID) {
-    throw new Error("Airtable configuration missing. Please set AIRTABLE_API_TOKEN, AIRTABLE_BASE_ID, and AIRTABLE_TABLE_ID");
+export async function fetchModelsFromAirtable(options?: { baseId?: string; tableId?: string }): Promise<InsertModel[]> {
+  let baseId = options?.baseId;
+  let tableId = options?.tableId;
+  let token: string | undefined;
+
+  const dbConfig = await storage.getAirtableConfig();
+  token = dbConfig?.apiToken ?? process.env.AIRTABLE_API_TOKEN;
+  baseId = baseId ?? dbConfig?.baseId ?? process.env.AIRTABLE_BASE_ID ?? "";
+  tableId = tableId ?? dbConfig?.tableId ?? process.env.AIRTABLE_TABLE_ID ?? "";
+
+  if (!token || !baseId || !tableId) {
+    throw new Error(
+      "Airtable configuration missing. Configure Base ID, Table ID, and API Token in Admin → Import (Airtable Connection)."
+    );
   }
+
+  // Load model field defs so we can dynamically map Airtable columns to attributes
+  const fieldDefs = await storage.getModelFieldDefs();
+  // Only include defs that have an airtableColumn defined and are not the grade_band
+  // (grade_band is mapped via the standard "Grades" field, not attributes)
+  const attributeFieldDefs = fieldDefs.filter(
+    (d) => d.airtableColumn && d.key !== "grade_band"
+  );
 
   const models: InsertModel[] = [];
   let offset: string | undefined;
 
   do {
-    const url = new URL(`https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}`);
+    const url = new URL(`https://api.airtable.com/v0/${baseId}/${tableId}`);
+    url.searchParams.set("filterByFormula", `FIND("CCL", {Topic / Project}) > 0`);
     if (offset) {
       url.searchParams.set("offset", offset);
     }
 
     const response = await fetch(url.toString(), {
       headers: {
-        Authorization: `Bearer ${AIRTABLE_API_TOKEN}`,
+        Authorization: `Bearer ${token}`,
         "Content-Type": "application/json",
       },
     });
@@ -58,17 +67,62 @@ export async function fetchModelsFromAirtable(): Promise<InsertModel[]> {
 
     for (const record of data.records) {
       const fields = record.fields;
-      
-      if (!fields["Model Name"]) continue;
+
+      if (!fields["Solution Name"]) continue;
+
+      // Build attributes map from configured field defs
+      const attributes: Record<string, string> = {};
+      for (const def of attributeFieldDefs) {
+        const colName = def.airtableColumn!;
+        const rawValue = fields[colName];
+        if (rawValue !== undefined && rawValue !== null) {
+          let strValue: string;
+          if (typeof rawValue === "boolean") {
+            strValue = rawValue ? "Yes" : "No";
+          } else if (Array.isArray(rawValue)) {
+            strValue = rawValue.join(", ");
+          } else {
+            strValue = String(rawValue);
+          }
+          attributes[def.key] = strValue.trim();
+        }
+      }
+
+      // outcomeTypes = CCL Outcomes high-level categories only (e.g. "Content & Career Knowledge & Skills")
+      const cclOutcomes = normalizeToString(fields["CCL Outcomes"]);
+      const outcomeTypes = cclOutcomes;
+
+      // Leaps stored separately — exact names for individual matching
+      const leaps = normalizeToString(fields["Leaps"]);
+      if (leaps) attributes["leaps"] = leaps;
+
+      // Keep split display lists for admin reference
+      if (cclOutcomes) attributes["outcomes_list"] = cclOutcomes;
+      if (leaps) attributes["leaps_list"] = leaps;
+
+      // keyPractices = CCL Kit Activities high-level categories (e.g. "Academic Integration")
+      const keyPractices = normalizeToString(fields["CCL Kit Activities"]);
+      if (keyPractices) attributes["practices_list"] = keyPractices;
+
+      // Reach, Impact, Build Items — display-only context fields
+      const reach = normalizeToString(fields["Reach"]);
+      if (reach) attributes["reach"] = reach;
+      const impact = normalizeToString(fields["Impact"]);
+      if (impact) attributes["impact"] = impact;
+      const buildItems = normalizeToString(fields["Build Items Provided"]);
+      if (buildItems) attributes["build_items"] = buildItems;
+      // Grad Aims and Activities columns intentionally not imported (conflicting data)
 
       models.push({
-        name: fields["Model Name"] || "",
-        grades: fields["Grades"] || "",
+        name: fields["Solution Name"] || "",
+        grades: normalizeToString(fields["Grades"]),
         description: fields["Description"] || "",
-        link: fields["Model Link"] || "",
-        outcomeTypes: normalizeToString(fields["Outcome Types"]),
-        keyPractices: normalizeToString(fields["Key Practices"]),
-        implementationSupports: normalizeToString(fields["Implementation Supports"]),
+        link: fields["Website"] || "",
+        imageUrl: fields["Image URL"] || null,
+        outcomeTypes,
+        keyPractices,
+        implementationSupports: "",
+        attributes,
       });
     }
 
