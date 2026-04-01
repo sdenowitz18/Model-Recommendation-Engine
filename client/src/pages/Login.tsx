@@ -27,8 +27,8 @@ export default function Login() {
       if (!res.ok) throw new Error(data.message || "Something went wrong");
       return data;
     },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["auth-me"] });
+    onSuccess: (data) => {
+      qc.setQueryData(["auth-me"], data);
       navigate("/ccl");
     },
     onError: (err: Error) => {

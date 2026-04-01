@@ -30,6 +30,10 @@ export function log(message: string, source = "express") {
 export function createApp(opts: { serveStaticFiles?: boolean } = {}) {
   const app = express();
 
+  // Trust Vercel's (and other reverse proxies') forwarded headers so that
+  // secure cookies are set correctly even when TLS terminates at the proxy.
+  app.set("trust proxy", 1);
+
   app.use(
     express.json({
       verify: (req: any, _res, buf) => {
