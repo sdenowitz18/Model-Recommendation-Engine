@@ -56,12 +56,14 @@ async function buildAll() {
   await mkdir(funcDir, { recursive: true });
   await mkdir(".vercel/output/static", { recursive: true });
 
-  // Bundle the Express handler as a self-contained ESM function
+  // Bundle the Express handler as a self-contained CJS function.
+  // Must use CJS (not ESM) because Express uses require() internally,
+  // which esbuild ESM bundles don't support ("Dynamic require not supported").
   await esbuild({
     entryPoints: ["api/_entry.ts"],
     platform: "node",
     bundle: true,
-    format: "esm",
+    format: "cjs",
     outfile: `${funcDir}/index.js`,
     define: { "process.env.NODE_ENV": '"production"' },
     external: ["bufferutil"],
