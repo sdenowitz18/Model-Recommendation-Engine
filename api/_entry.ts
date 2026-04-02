@@ -1,14 +1,14 @@
 import type { IncomingMessage, ServerResponse } from "http";
 import { createApp } from "../server/createApp";
 
-// On Vercel, static files are served by the CDN from dist/public (outputDirectory).
-// Express only needs to handle API routes here.
+// Static assets (.js, .css, etc.) are served from the CDN via .vercel/output/static.
+// The function handles API routes AND serves index.html for SPA route fallbacks.
 let app: ReturnType<typeof createApp>["app"] | null = null;
 let ready: Promise<void> = Promise.resolve();
 let initError: unknown = null;
 
 try {
-  const result = createApp({ serveStaticFiles: false });
+  const result = createApp({ serveStaticFiles: true });
   app = result.app;
   ready = result.ready;
 } catch (err) {

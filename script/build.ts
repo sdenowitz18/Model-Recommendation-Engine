@@ -85,10 +85,16 @@ async function buildAll() {
     ),
   );
 
-  // Copy Vite build to Vercel static output
+  // Copy Vite build to:
+  // 1. Vercel static output – CDN-served assets (JS/CSS/images load fast)
+  // 2. Function directory – Express serves index.html for SPA route fallbacks
   await cp("dist/public", ".vercel/output/static", { recursive: true });
+  await cp("dist/public", `${funcDir}/public`, { recursive: true });
 
-  // Routing: API calls → function, static files served from filesystem, SPA fallback
+  // Routing:
+  //   /api/*         → Express function (API handlers)
+  //   known files    → CDN static output (fast asset delivery)
+  //   everything else → Express function (serves index.html for SPA routes)
   await writeFile(
     ".vercel/output/config.json",
     JSON.stringify(
@@ -97,7 +103,7 @@ async function buildAll() {
         routes: [
           { src: "/api/(.*)", dest: "/index" },
           { handle: "filesystem" },
-          { src: "/(.*)", dest: "/index.html" },
+          { src: "/(.*)", dest: "/index" },
         ],
       },
       null,
