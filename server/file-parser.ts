@@ -1,3 +1,4 @@
+import os from "os";
 import * as xlsx from "xlsx";
 import { parseOffice } from "officeparser";
 
@@ -19,7 +20,7 @@ export async function extractFileContent(
     mimeType === "application/pdf" || fileName.endsWith(".pdf")
   ) {
     try {
-      const result = await parseOffice(buffer);
+      const result = await parseOffice(buffer, { tempFilesLocation: os.tmpdir() });
       if (result && typeof result === "object" && "toText" in result && typeof (result as any).toText === "function") {
         return (result as any).toText();
       }

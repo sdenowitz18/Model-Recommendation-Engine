@@ -79,6 +79,7 @@ async function buildAll() {
         handler: "index.js",
         launcherType: "Nodejs",
         shouldAddHelpers: false,
+        maxDuration: 30,
       },
       null,
       2,
