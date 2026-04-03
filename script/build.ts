@@ -5,7 +5,6 @@ import { rm, readFile, mkdir, writeFile, cp } from "fs/promises";
 // Server deps to bundle to reduce openat(2) syscalls
 // which helps cold start times
 const allowlist = [
-  "@vercel/blob",
   "drizzle-orm",
   "drizzle-zod",
   "express",

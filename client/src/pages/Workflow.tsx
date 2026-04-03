@@ -1,5 +1,4 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { upload } from "@vercel/blob/client";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useParams } from "wouter";
 import { useSession } from "@/hooks/use-advisor";
@@ -39,22 +38,19 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 
-// Files larger than this threshold are uploaded directly to Vercel Blob storage
-// (bypassing the 4.5 MB serverless function payload limit).
-const BLOB_THRESHOLD_BYTES = 3 * 1024 * 1024; // 3 MB
+// Vercel serverless functions have a 4.5 MB request body limit.
+// Warn users who try to upload files larger than this.
+const MAX_UPLOAD_BYTES = 4 * 1024 * 1024; // 4 MB (leave headroom for multipart overhead)
 
 async function uploadDocumentFile(
   file: File,
   sessionId: string | number,
   stepNumber: number,
 ): Promise<{ fileContent?: string }> {
-  if (file.size > BLOB_THRESHOLD_BYTES) {
-    await upload(file.name, file, {
-      access: "public",
-      handleUploadUrl: "/api/blob/upload",
-      clientPayload: JSON.stringify({ sessionId: String(sessionId), stepNumber: String(stepNumber) }),
-    });
-    return {};
+  if (file.size > MAX_UPLOAD_BYTES) {
+    throw new Error(
+      `"${file.name}" is too large (${(file.size / 1024 / 1024).toFixed(1)} MB). Please upload files under 4 MB. For large PDFs, try exporting just the relevant pages or compressing the file first.`,
+    );
   }
   const formData = new FormData();
   formData.append("file", file);
