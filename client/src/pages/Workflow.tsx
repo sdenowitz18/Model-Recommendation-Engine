@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import { upload } from "@vercel/blob/client";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useParams } from "wouter";
 import { useSession } from "@/hooks/use-advisor";
@@ -37,6 +38,33 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+
+// Files larger than this threshold are uploaded directly to Vercel Blob storage
+// (bypassing the 4.5 MB serverless function payload limit).
+const BLOB_THRESHOLD_BYTES = 3 * 1024 * 1024; // 3 MB
+
+async function uploadDocumentFile(
+  file: File,
+  sessionId: string | number,
+  stepNumber: number,
+): Promise<{ fileContent?: string }> {
+  if (file.size > BLOB_THRESHOLD_BYTES) {
+    await upload(file.name, file, {
+      access: "public",
+      handleUploadUrl: "/api/blob/upload",
+      clientPayload: JSON.stringify({ sessionId: String(sessionId), stepNumber: String(stepNumber) }),
+    });
+    return {};
+  }
+  const formData = new FormData();
+  formData.append("file", file);
+  const res = await fetch(
+    `/api/sessions/${sessionId}/workflow/documents/${stepNumber}/upload`,
+    { method: "POST", body: formData, credentials: "include" },
+  );
+  if (!res.ok) throw new Error("Upload failed");
+  return res.json();
+}
 
 const US_STATES = [
   "Alabama","Alaska","Arizona","Arkansas","California","Colorado","Connecticut",
@@ -784,16 +812,7 @@ function IntroUploadPanel({ sessionId, onNext, onSkip }: IntroUploadPanelProps) 
   const { data: docs = [], refetch } = useStepDocuments(sessionId, 0);
 
   const uploadMutation = useMutation({
-    mutationFn: async (file: File) => {
-      const formData = new FormData();
-      formData.append("file", file);
-      const res = await fetch(
-        `/api/sessions/${sessionId}/workflow/documents/0/upload`,
-        { method: "POST", body: formData, credentials: "include" },
-      );
-      if (!res.ok) throw new Error("Upload failed");
-      return res.json();
-    },
+    mutationFn: (file: File) => uploadDocumentFile(file, sessionId, 0),
     onSuccess: () => refetch(),
     onError: () => toast({ title: "Upload failed", description: "Please try again.", variant: "destructive" }),
   });
@@ -1181,11 +1200,7 @@ function SchoolContextQuestionnaire({ sessionId, stepData, onConfirm }: SchoolCo
     if (!file) return;
     setIsUploadingDoc(true);
     try {
-      const formData = new FormData();
-      formData.append("file", file);
-      const res = await fetch(`/api/sessions/${sessionId}/workflow/documents/1/upload`, { method: "POST", body: formData, credentials: "include" });
-      if (!res.ok) throw new Error("Upload failed");
-      const doc = await res.json();
+      const doc = await uploadDocumentFile(file, sessionId, 1);
       setContextDocs((prev) => [...prev, { name: file.name }]);
       if (doc.fileContent) {
         setContext((prev: string) => prev ? `${prev}\n\n[From ${file.name}]:\n${doc.fileContent}` : `[From ${file.name}]:\n${doc.fileContent}`);
@@ -1815,13 +1830,7 @@ function AimsForLearnersQuestionnaire({ sessionId, stepData, onConfirm }: AimsFo
     if (!file) return;
     setIsUploadingDoc(true);
     try {
-      const formData = new FormData();
-      formData.append("file", file);
-      const res = await fetch(`/api/sessions/${sessionId}/workflow/documents/2/upload`, {
-        method: "POST", body: formData, credentials: "include",
-      });
-      if (!res.ok) throw new Error("failed");
-      const doc = await res.json();
+      const doc = await uploadDocumentFile(file, sessionId, 2);
       if (target === "outcomes") {
         setOutcomesContextDocs((prev) => [...prev, { name: file.name }]);
         if (doc.fileContent) setOutcomesContext((prev: string) => prev ? `${prev}\n\n[From ${file.name}]:\n${doc.fileContent}` : `[From ${file.name}]:\n${doc.fileContent}`);
@@ -2485,13 +2494,7 @@ function PracticesQuestionnaire({ sessionId, stepData, onConfirm }: PracticesQue
     if (!file) return;
     setIsUploadingDoc(true);
     try {
-      const formData = new FormData();
-      formData.append("file", file);
-      const res = await fetch(`/api/sessions/${sessionId}/workflow/documents/3/upload`, {
-        method: "POST", body: formData, credentials: "include",
-      });
-      if (!res.ok) throw new Error("failed");
-      const doc = await res.json();
+      const doc = await uploadDocumentFile(file, sessionId, 3);
       setPracticesContextDocs((prev) => [...prev, { name: file.name }]);
       if (doc.fileContent) {
         setPracticesContext((prev: string) =>
@@ -3058,11 +3061,7 @@ function StepChat({ sessionId, stepNumber, onAiSuggestions, modelName }: StepCha
     const file = e.target.files?.[0];
     if (!file) return;
     try {
-      const formData = new FormData();
-      formData.append("file", file);
-      const url = `/api/sessions/${sessionId}/workflow/documents/${stepNumber}/upload`;
-      const res = await fetch(url, { method: "POST", body: formData, credentials: "include" });
-      if (!res.ok) throw new Error("Upload failed");
+      await uploadDocumentFile(file, sessionId, stepNumber);
       qc.invalidateQueries({ queryKey: [api.workflow.getDocuments.path, sessionId, stepNumber] });
       chatMutation.mutate(`I've attached a document: "${file.name}". Please review it and incorporate relevant information for this step.`);
     } catch (err) {
@@ -5114,11 +5113,7 @@ function SystemElementsQuestionnaire({ sessionId, stepData, onConfirm }: SystemE
     if (!file) return;
     setIsUploadingDetailDoc(true);
     try {
-      const formData = new FormData();
-      formData.append("file", file);
-      const res = await fetch(`/api/sessions/${sessionId}/workflow/documents/4/upload`, { method: "POST", body: formData, credentials: "include" });
-      if (!res.ok) throw new Error("failed");
-      const doc = await res.json();
+      const doc = await uploadDocumentFile(file, sessionId, 4);
       if (doc.fileContent) {
         userHasAnswered.current = true;
         setAnswers((prev) => ({
@@ -5314,11 +5309,7 @@ function SystemElementsQuestionnaire({ sessionId, stepData, onConfirm }: SystemE
     if (!file) return;
     setIsUploadingDoc(true);
     try {
-      const formData = new FormData();
-      formData.append("file", file);
-      const res = await fetch(`/api/sessions/${sessionId}/workflow/documents/4/upload`, { method: "POST", body: formData, credentials: "include" });
-      if (!res.ok) throw new Error("failed");
-      const doc = await res.json();
+      const doc = await uploadDocumentFile(file, sessionId, 4);
       setContextDocs((prev) => ({ ...prev, [groupKey]: [...(prev[groupKey] || []), { name: file.name }] }));
       if (doc.fileContent) {
         setContextTexts((prev) => ({

@@ -3,6 +3,7 @@ import type { Server } from "http";
 import { z } from "zod";
 import multer from "multer";
 import * as xlsx from "xlsx";
+import { handleUpload, type HandleUploadBody } from "@vercel/blob/client";
 
 import { storage } from "./storage";
 import { openai } from "./openai";
@@ -1014,6 +1015,56 @@ Use markdown formatting — headers and bullets for structured answers, prose fo
     } catch (err) {
       console.error("Upload error:", err);
       res.status(500).json({ message: "Failed to upload document" });
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // BLOB UPLOAD — handles large files that exceed Vercel's 4.5MB function limit.
+  // The browser uploads directly to Vercel Blob storage; this endpoint provides
+  // the upload token and processes the file once it lands in blob storage.
+  // -------------------------------------------------------------------------
+  app.post("/api/blob/upload", async (req, res) => {
+    try {
+      const body = req.body as HandleUploadBody;
+      const jsonResponse = await handleUpload({
+        body,
+        request: req as any,
+        onBeforeGenerateToken: async (_pathname, _clientPayload) => {
+          return {
+            allowedContentTypes: [
+              "application/pdf",
+              "application/msword",
+              "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+              "application/vnd.ms-powerpoint",
+              "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+              "text/plain",
+              "text/markdown",
+            ],
+            maximumSizeInBytes: 50 * 1024 * 1024, // 50 MB
+          };
+        },
+        onUploadCompleted: async ({ blob, tokenPayload }) => {
+          try {
+            const { sessionId, stepNumber } = JSON.parse(tokenPayload || "{}");
+            if (!sessionId || stepNumber === undefined) return;
+
+            const fileRes = await fetch(blob.url);
+            const arrayBuffer = await fileRes.arrayBuffer();
+            const buffer = Buffer.from(arrayBuffer);
+            const contentType = blob.contentType || "application/octet-stream";
+            const fileName = blob.pathname.split("/").pop() || blob.pathname;
+
+            const text = await extractFileContent(buffer, fileName, contentType);
+            await storage.addStepDocument(Number(sessionId), Number(stepNumber), fileName, text, contentType);
+          } catch (err) {
+            console.error("[blob] onUploadCompleted error:", err);
+          }
+        },
+      });
+      res.json(jsonResponse);
+    } catch (err) {
+      console.error("[blob] upload error:", err);
+      res.status(400).json({ error: String(err) });
     }
   });
 
