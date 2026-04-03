@@ -1,9 +1,6 @@
 import os from "os";
 import * as xlsx from "xlsx";
 import { parseOffice } from "officeparser";
-// pdf-parse ships a CJS-only build; require() forces the correct resolution
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const pdfParse: (buf: Buffer) => Promise<{ text: string }> = require("pdf-parse");
 
 /**
  * Extract text content from uploaded file buffers.
@@ -14,23 +11,15 @@ export async function extractFileContent(
   fileName: string,
   mimeType: string,
 ): Promise<string> {
-  // PDFs — use pdf-parse (works fully in memory, no temp files needed)
-  if (mimeType === "application/pdf" || fileName.endsWith(".pdf")) {
-    try {
-      const data = await pdfParse(buffer);
-      return data.text;
-    } catch (e) {
-      console.error("pdf-parse error:", e);
-      return buffer.toString("utf-8");
-    }
-  }
-
-  // Office documents (PowerPoint, Word) — use officeparser with /tmp for temp files
+  // Office documents (PowerPoint, Word) and PDFs via officeparser.
+  // tempFilesLocation must point to /tmp — Vercel's serverless filesystem is
+  // read-only everywhere except /tmp.
   if (
     mimeType.includes("presentation") || mimeType.includes("powerpoint") ||
     fileName.endsWith(".pptx") || fileName.endsWith(".ppt") ||
     mimeType.includes("msword") || mimeType.includes("wordprocessingml") ||
-    fileName.endsWith(".doc") || fileName.endsWith(".docx")
+    fileName.endsWith(".doc") || fileName.endsWith(".docx") ||
+    mimeType === "application/pdf" || fileName.endsWith(".pdf")
   ) {
     try {
       const result = await parseOffice(buffer, { tempFilesLocation: os.tmpdir() });
@@ -40,6 +29,7 @@ export async function extractFileContent(
       return typeof result === "string" ? result : String(result);
     } catch (e) {
       console.error("officeparser error:", e);
+      // Fallback: return raw buffer as text (better than nothing for plain-text PDFs)
       return buffer.toString("utf-8");
     }
   }

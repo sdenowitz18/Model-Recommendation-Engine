@@ -3,7 +3,6 @@ import type { Server } from "http";
 import { z } from "zod";
 import multer from "multer";
 import * as xlsx from "xlsx";
-import { handleUpload, type HandleUploadBody } from "@vercel/blob/client";
 
 import { storage } from "./storage";
 import { openai } from "./openai";
@@ -1025,7 +1024,11 @@ Use markdown formatting — headers and bullets for structured answers, prose fo
   // -------------------------------------------------------------------------
   app.post("/api/blob/upload", async (req, res) => {
     try {
-      const body = req.body as HandleUploadBody;
+      // Lazy-require so a missing BLOB_READ_WRITE_TOKEN doesn't crash the
+      // function at startup — it only fails when this endpoint is called.
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { handleUpload } = require("@vercel/blob/client") as typeof import("@vercel/blob/client");
+      const body = req.body;
       const jsonResponse = await handleUpload({
         body,
         request: req as any,
