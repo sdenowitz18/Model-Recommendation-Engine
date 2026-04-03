@@ -29,8 +29,12 @@ export async function extractFileContent(
       return typeof result === "string" ? result : String(result);
     } catch (e) {
       console.error("officeparser error:", e);
-      // Fallback: return raw buffer as text (better than nothing for plain-text PDFs)
-      return buffer.toString("utf-8");
+      // Attempt a plain-text read and strip null bytes so PostgreSQL TEXT
+      // columns don't reject the insert (binary PDFs contain NUL characters).
+      const raw = buffer.toString("utf-8").replace(/\0/g, "");
+      // If the result looks like printable text (not binary noise), use it.
+      const printable = raw.replace(/[^\x09\x0A\x0D\x20-\x7E\u00A0-\uFFFF]/g, "");
+      return printable.trim() || "[Document uploaded — text could not be extracted automatically.]";
     }
   }
 
