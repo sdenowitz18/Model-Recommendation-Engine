@@ -1,7 +1,9 @@
 import os from "os";
 import * as xlsx from "xlsx";
 import { parseOffice } from "officeparser";
-import pdfParse from "pdf-parse";
+// pdf-parse ships a CJS-only build; require() forces the correct resolution
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const pdfParse: (buf: Buffer) => Promise<{ text: string }> = require("pdf-parse");
 
 /**
  * Extract text content from uploaded file buffers.
