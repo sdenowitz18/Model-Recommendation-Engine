@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo, forwardRef, useImperativeHandle } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useParams } from "wouter";
 import { useSession } from "@/hooks/use-advisor";
@@ -20,6 +20,7 @@ import { useTalkItOut } from "@/hooks/use-talk-it-out";
 import ReactMarkdown from "react-markdown";
 import { cn } from "@/lib/utils";
 import { Link } from "wouter";
+import logoUrl from "@/assets/transcend-logo.svg";
 import {
   Send, Sparkles, User, Loader2, RotateCcw, Check, ChevronRight,
   Upload, FileText, X, Settings, ArrowRight, RefreshCcw, School,
@@ -27,7 +28,7 @@ import {
   Paperclip, Download, ChevronDown, ChevronUp, ChevronLeft, ExternalLink,
   GripVertical, Plus, Minus, ArrowUp, ArrowDown, MessageSquare,
   CloudUpload, Bot, Briefcase, GraduationCap, Layers, Trophy, Users, Pencil,
-  MessageCircle, Maximize2, Minimize2,
+  MessageCircle, Maximize2, Minimize2, Split, Zap,
 } from "lucide-react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -83,6 +84,93 @@ const STEP_ICONS: Record<number, any> = {
   6: ClipboardCheck,
   7: LayoutGrid,
   8: Bot,
+};
+
+// =========================================================================
+// V2 PROTOTYPE — Experience-scoped workflow path
+// =========================================================================
+//
+// v2 introduces a path picker after Step 1. Users choose between defining
+// aims for their whole CCL program (Path A — same as v1) or defining a
+// specific experience (Path B — adds a new "Experience" step in front of
+// Aims, and removes the standalone Practices step since practices are
+// captured inside the Experience step).
+//
+// Storage strategy: v2 reuses v1 stepData keys ("1" school, "2" aims,
+// "3" practices, "4" system elements, etc.) so the recommendation engine
+// in server/recommendation-engine.ts works unchanged. v2-specific data
+// (path choice, experience-level fields) lives under new top-level keys
+// in stepData ("designScope", "experience").
+//
+// For Path B: the Experience step renders at activeStep === 2 and writes
+// to stepData["3"].selected_practices (so practices are visible to the
+// engine), plus stepData.experience for v2-specific metadata. Aims then
+// renders at activeStep === 3 and writes to stepData["2"] as it does in
+// v1. The chevron labels are remapped per-path so users see a coherent
+// progression even though the underlying activeStep integers differ from
+// v1's natural ordering.
+
+type DesignScope = "whole_program" | "specific_experience";
+
+interface V2StepDef {
+  /** Integer used as activeStep / data-testid; aligned with v1 step numbers
+   *  for the steps that share keys (1=school, 4=system_elements, etc.).
+   *  In Path B, step numbers 2 and 3 are remapped: 2 = experience panel
+   *  (writes to stepData["3"] practices), 3 = aims (writes to stepData["2"]). */
+  number: number;
+  label: string;
+  icon: any;
+}
+
+const V2_STEPS_PATH_A: V2StepDef[] = [
+  { number: 1, label: "School Context", icon: School },
+  { number: 0, label: "Upload Documents", icon: CloudUpload },
+  { number: 2, label: "Outcomes", icon: Target },
+  { number: 9, label: "LEAPs", icon: Zap },
+  { number: 3, label: "Practices", icon: BookOpen },
+  { number: 4, label: "System Elements", icon: Settings },
+  { number: 5, label: "Model Preferences", icon: Sliders },
+  { number: 6, label: "Decision Frame", icon: ClipboardCheck },
+  { number: 7, label: "Recommendations", icon: LayoutGrid },
+  { number: 8, label: "Explore Model", icon: Bot },
+];
+
+const V2_STEPS_PATH_B: V2StepDef[] = [
+  { number: 1, label: "School Context", icon: School },
+  { number: 2, label: "Define Experience", icon: BookOpen },
+  { number: 3, label: "Outcomes", icon: Target },
+  { number: 9, label: "LEAPs", icon: Zap },
+  { number: 4, label: "System Elements", icon: Settings },
+  { number: 5, label: "Model Preferences", icon: Sliders },
+  { number: 6, label: "Decision Frame", icon: ClipboardCheck },
+  { number: 7, label: "Recommendations", icon: LayoutGrid },
+  { number: 8, label: "Explore Model", icon: Bot },
+];
+
+/** Only School Context is shown until the user commits to a path. */
+const V2_SCHOOL_CONTEXT_ONLY: V2StepDef = { number: 1, label: "School Context", icon: School };
+
+type V2HeaderRow =
+  | { type: "real"; step: V2StepDef }
+  | { type: "pathPicker" };
+
+/** Build header chevrons: before path selection show School ± Choose path; afterward each path's full pill list. */
+function buildV2HeaderRows(designScope: DesignScope | undefined, showPathPicker: boolean): V2HeaderRow[] {
+  if (!designScope) {
+    const rows: V2HeaderRow[] = [{ type: "real", step: V2_SCHOOL_CONTEXT_ONLY }];
+    if (showPathPicker) rows.push({ type: "pathPicker" });
+    return rows;
+  }
+  if (designScope === "whole_program") return V2_STEPS_PATH_A.map((step) => ({ type: "real", step }));
+  return V2_STEPS_PATH_B.map((step) => ({ type: "real", step }));
+}
+
+/** Targeted grade-band sub-options gated by the school-context grade band. */
+const EXPERIENCE_GRADE_OPTIONS: Record<string, string[]> = {
+  "K-5": ["K", "1", "2", "3", "4", "5"],
+  "6-8": ["6", "7", "8"],
+  "9-12": ["9", "10", "11", "12"],
+  "Post-secondary": ["Post-secondary"],
 };
 
 function useWorkflowProgress(sessionId: string | null) {
@@ -150,8 +238,12 @@ const STEP_TRANSITION_CONTENT: Record<number, { title: string; body: string }> =
     body: "Let's start with the basics — your school, district, grade band, and any community context that shapes the experience you're designing.",
   },
   2: {
-    title: "Aims for Learners",
-    body: "What outcomes and learning principles matter most for the experience you're building? Select only what's directly relevant — not everything your school aspires to.",
+    title: "Outcomes",
+    body: "What outcomes matter most for the experience you're building? Select only what's directly relevant — not everything your school aspires to.",
+  },
+  9: {
+    title: "LEAPs",
+    body: "Now let's capture the learning principles that should define this experience. LEAPs describe the design moves and environment you're trying to create.",
   },
   3: {
     title: "Learning Experience & Practices",
@@ -175,15 +267,35 @@ const STEP_TRANSITION_CONTENT: Record<number, { title: string; body: string }> =
   },
 };
 
+// Path B uses different copy for steps 2 and 3 because the experience step
+// replaces the generic Aims/Practices intro. Other steps fall back to the
+// shared STEP_TRANSITION_CONTENT.
+const STEP_TRANSITION_CONTENT_PATH_B: Record<number, { title: string; body: string }> = {
+  2: {
+    title: "Define Your Experience",
+    body: "Tell us about the experience you're designing. We'll capture the basics, the practices it should incorporate, and any documents you have so we can find models that fit.",
+  },
+  3: {
+    title: "Outcomes",
+    body: "What outcomes matter most for the experience you just defined? Select only what's directly relevant.",
+  },
+  9: {
+    title: "LEAPs",
+    body: "Now let's capture the learning principles that should define this experience. LEAPs describe the design moves and environment you're trying to create.",
+  },
+};
+
 interface StepTransitionPageProps {
   stepNumber: number;
   onContinue: () => void;
   onBack: () => void;
   isLoading?: boolean;
+  designScope?: DesignScope;
 }
 
-function StepTransitionPage({ stepNumber, onContinue, onBack, isLoading }: StepTransitionPageProps) {
-  const content = STEP_TRANSITION_CONTENT[stepNumber];
+function StepTransitionPage({ stepNumber, onContinue, onBack, isLoading, designScope }: StepTransitionPageProps) {
+  const content = (designScope === "specific_experience" && STEP_TRANSITION_CONTENT_PATH_B[stepNumber])
+    || STEP_TRANSITION_CONTENT[stepNumber];
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -229,43 +341,101 @@ function StepTransitionPage({ stepNumber, onContinue, onBack, isLoading }: StepT
   );
 }
 
-export default function Workflow() {
-  // Read sessionId from URL params (/ccl/:sessionId) if present
+export default function WorkflowV2() {
+  // Read sessionId from URL params (/ccl-v2/:sessionId) if present
   const params = useParams<{ sessionId?: string }>();
   const { sessionId, isLoading: isSessionLoading } = useSession(params.sessionId ?? null);
   const { data: progress, refetch: refetchProgress } = useWorkflowProgress(sessionId);
-  const [activeStep, setActiveStep] = useState(0);
+  const [activeStep, setActiveStep] = useState(1);
   const { toast } = useToast();
   const qc = useQueryClient();
 
   // Transition page state — shown between top-level step advances
   const [transitionToStep, setTransitionToStep] = useState<number | null>(null);
   const transitionActionRef = useRef<() => void>(() => {});
+  /** Stores the intended activeStep to set after confirmStepMutation resolves, overriding the default stepNumber+1. */
+  const intendedNextStepRef = useRef<number | null>(null);
+  /** True once we've set activeStep from the initial progress load — prevents background refetches from overriding manual navigation. */
+  const hasInitializedActiveStep = useRef(false);
+  /**
+   * Set to true when the user manually clicks a chevron while a confirmStep mutation is in-flight.
+   * Prevents onSuccess from overriding the user's explicit navigation choice.
+   */
+  const userManuallyNavigatedRef = useRef(false);
+
+  // v2: path picker screen state — shown after Step 1 confirmation when the
+  // user hasn't yet picked a design scope (whole CCL program vs specific
+  // experience). Once picked, the rest of the flow renders accordingly.
+  const [showPathPicker, setShowPathPicker] = useState(false);
 
   // Incremented whenever the user clicks "Generate Model Recommendations" from
   // the Decision Frame (step 6), so RecommendationsView always triggers a fresh run.
   const [recommendRefreshKey, setRecommendRefreshKey] = useState(0);
 
   useEffect(() => {
-    if (progress) {
-      const completed = (progress.stepsCompleted as number[]) || [];
-      const data = (progress.stepData as Record<string, any>) || {};
-      const hasProgress = completed.length > 0 || Object.keys(data).length > 0;
-      setActiveStep(hasProgress ? progress.currentStep : 0);
+    if (!progress) return;
+    if (showPathPicker) return;
+    // Only set activeStep from server progress on initial load.
+    // After that, all navigation is driven by confirmStepMutation.onSuccess and
+    // chevron clicks — background refetches must not override the user's position.
+    // Also never interrupt an in-progress transition.
+    if (hasInitializedActiveStep.current) return;
+    if (transitionToStep !== null) return;
+
+    const data = (progress.stepData as Record<string, any>) || {};
+    const scope = data.designScope as DesignScope | undefined;
+    let next = progress.currentStep;
+
+    // v2 skips the global intro-upload until Path A commits; coerce server step 0 → school context unless Path A Documents.
+    if (next === 0 && scope !== "whole_program") {
+      next = 1;
     }
-  }, [progress?.currentStep, JSON.stringify(progress?.stepsCompleted)]);
+
+    const completed = (progress.stepsCompleted as number[]) || [];
+    const hasAnything = completed.length > 0 || scope || !!data.designScope ||
+      !!(data["1"] && typeof data["1"] === "object" && Object.keys(data["1"]).length > 0);
+
+    // Fresh-ish session stuck on currentStep 0 from v1/back-end default → School Context only.
+    if (!hasAnything && progress.currentStep === 0) {
+      next = 1;
+    }
+
+    hasInitializedActiveStep.current = true;
+    setActiveStep(next);
+  }, [progress, showPathPicker, transitionToStep]);
+
+  // v2: derive designScope from stepData for path-aware rendering.
+  const designScope: DesignScope | undefined = (progress?.stepData as Record<string, any>)?.designScope;
 
   const confirmStepMutation = useMutation({
     mutationFn: async (stepNumber: number) => {
       const url = buildUrl(api.workflow.confirmStep.path, { sessionId: sessionId! });
       return apiRequest("POST", url, { stepNumber });
     },
-    onSuccess: (_data: any, stepNumber: number) => {
-      // Advance activeStep immediately so the correct step is visible as soon as
-      // the transition page is dismissed, without waiting for refetchProgress to
-      // propagate through the useEffect.
-      setActiveStep(Math.min(stepNumber + 1, 8));
+    onSuccess: async (_data: any, stepNumber: number) => {
+      if (stepNumber === 1) {
+        await refetchProgress();
+        const refreshed = qc.getQueryData<WorkflowProgress>([api.workflow.getProgress.path, sessionId]);
+        const ds = (refreshed?.stepData as Record<string, any>)?.designScope as DesignScope | undefined;
+        if (!ds) {
+          setTransitionToStep(null);
+          setShowPathPicker(true);
+          return;
+        }
+      }
+      // If the user manually clicked a chevron while this mutation was in-flight,
+      // don't override their navigation choice — just clean up state.
+      const wasManual = userManuallyNavigatedRef.current;
+      // Read intended step BEFORE clearing refs
+      const nextStep = intendedNextStepRef.current ?? Math.min(stepNumber + 1, 8);
+      userManuallyNavigatedRef.current = false;
+      intendedNextStepRef.current = null;
       setTransitionToStep(null);
+      if (!wasManual) {
+        // Advance activeStep — use the stored intended step if set (handles custom routing
+        // like Outcomes → LEAPs → Practices), otherwise fall back to stepNumber + 1.
+        setActiveStep(nextStep);
+      }
       refetchProgress();
       // Confirming the Decision Frame (step 6) should always re-run recommendations
       if (stepNumber === 6) setRecommendRefreshKey((k) => k + 1);
@@ -275,14 +445,109 @@ export default function Workflow() {
   // Show a transition page before advancing. The transition page stays visible
   // (with a loading spinner on →) until the server confirms, then auto-dismisses.
   const handleStepDone = useCallback((stepNumber: number) => {
+    // A new step completion is always intentional — clear any leftover manual-navigation
+    // flag so onSuccess always advances to the next step after this mutation.
+    userManuallyNavigatedRef.current = false;
+
+    // v2: when finishing Step 1 without a chosen path, skip the regular
+    // transition page — we go straight to the path picker on success.
+    if (stepNumber === 1 && !designScope) {
+      confirmStepMutation.mutate(stepNumber);
+      return;
+    }
+
+    // Outcomes → LEAPs (step 9) routing
+    if (stepNumber === 2 && designScope === "whole_program") {
+      intendedNextStepRef.current = 9;
+      transitionActionRef.current = () => confirmStepMutation.mutate(stepNumber);
+      setTransitionToStep(9);
+      return;
+    }
+    if (stepNumber === 3 && designScope === "specific_experience") {
+      intendedNextStepRef.current = 9;
+      transitionActionRef.current = () => confirmStepMutation.mutate(stepNumber);
+      setTransitionToStep(9);
+      return;
+    }
+
+    // LEAPs (step 9) → next step in each path
+    if (stepNumber === 9) {
+      const nextAfterLeaps = designScope === "whole_program" ? 3 : 4;
+      intendedNextStepRef.current = nextAfterLeaps;
+      transitionActionRef.current = () => confirmStepMutation.mutate(stepNumber);
+      setTransitionToStep(nextAfterLeaps);
+      return;
+    }
+
     const nextStep = stepNumber + 1;
     if (nextStep <= 7) {
+      intendedNextStepRef.current = nextStep;
       transitionActionRef.current = () => confirmStepMutation.mutate(stepNumber);
       setTransitionToStep(nextStep);
     } else {
       confirmStepMutation.mutate(stepNumber);
     }
-  }, [confirmStepMutation]);
+  }, [confirmStepMutation, designScope]);
+
+  // v2: persist design scope + server currentStep (Path A → Documents step 0; Path B → Define Experience step 2).
+  const handlePickPath = useCallback(async (scope: DesignScope) => {
+    if (!sessionId) return;
+    try {
+      const currentProgress = await fetch(
+        buildUrl(api.workflow.getProgress.path, { sessionId }),
+        { credentials: "include" },
+      ).then((r) => r.json());
+      const currentStepData = { ...(currentProgress.stepData || {}) };
+      currentStepData.designScope = scope;
+      const nextStep = scope === "whole_program" ? 0 : 2;
+      await fetch(buildUrl(api.workflow.updateProgress.path, { sessionId }), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          currentStep: nextStep,
+          stepsCompleted: currentProgress.stepsCompleted,
+          stepData: currentStepData,
+        }),
+        credentials: "include",
+      });
+      qc.invalidateQueries({ queryKey: [api.workflow.getProgress.path, sessionId] });
+      setShowPathPicker(false);
+      setActiveStep(nextStep);
+    } catch {
+      toast({ title: "Error", description: "Could not save your choice.", variant: "destructive" });
+    }
+  }, [sessionId, qc, toast]);
+
+  const handleAdvanceFromPathADocuments = useCallback(() => {
+    transitionActionRef.current = () => {
+      void (async () => {
+        if (!sessionId) return;
+        try {
+          const p = await fetch(
+            buildUrl(api.workflow.getProgress.path, { sessionId }),
+            { credentials: "include" },
+          ).then((r) => r.json());
+          await fetch(buildUrl(api.workflow.updateProgress.path, { sessionId }), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              currentStep: 2,
+              stepsCompleted: p.stepsCompleted,
+              stepData: p.stepData,
+            }),
+            credentials: "include",
+          });
+          qc.invalidateQueries({ queryKey: [api.workflow.getProgress.path, sessionId] });
+        } catch {
+          toast({ title: "Error", description: "Couldn't advance to the next step.", variant: "destructive" });
+        } finally {
+          setActiveStep(2);
+          setTransitionToStep(null);
+        }
+      })();
+    };
+    setTransitionToStep(2);
+  }, [sessionId, qc, toast]);
 
   // Fire the pending action; for mutations the page stays until onSuccess dismisses it.
   // For direct advances (intro → step 1) we dismiss immediately.
@@ -329,7 +594,7 @@ export default function Workflow() {
         qc.invalidateQueries({ queryKey: [api.workflow.getConversation.path, sessionId, s.number] });
         qc.invalidateQueries({ queryKey: [api.workflow.getDocuments.path, sessionId, s.number] });
       });
-      setActiveStep(0);
+      setActiveStep(1);
       toast({ title: "All steps reset", description: "Starting completely fresh." });
     },
   });
@@ -370,32 +635,29 @@ export default function Workflow() {
   const stepsCompleted = (progress?.stepsCompleted as number[]) || [];
   const stepData = (progress?.stepData as Record<string, any>) || {};
 
+  // v2: header rows — progressive disclosure until the user selects a flow.
+  const v2HeaderRows = buildV2HeaderRows(designScope, showPathPicker);
+
+  const filteredHeaderRows = v2HeaderRows.filter((row) => {
+    if (row.type === "pathPicker") return true;
+    const step = row.step;
+    if (step.number === 8) return stepsCompleted.includes(7) || !!stepData["8"]?.selectedModelId;
+    return true;
+  });
+
   return (
     <div className="h-screen w-full overflow-hidden bg-background flex flex-col">
       {/* Top bar: branding + step chevrons + actions */}
       <header className="shrink-0 border-b border-border bg-white">
         {/* Row 1: branding + actions */}
         <div className="flex items-center justify-between px-4 py-2">
-          <Link href="/">
-            <div className="flex items-center gap-2 cursor-pointer hover:opacity-80 transition-opacity">
-              <div className="w-7 h-7 rounded-md bg-primary flex items-center justify-center shadow-sm">
-                <Sparkles className="w-3.5 h-3.5 text-white" />
-              </div>
-              <span className="text-sm font-display font-bold text-primary tracking-tight">Transcend</span>
-              <span className="text-[9px] text-muted-foreground uppercase tracking-widest">Model Advisor</span>
-            </div>
+          <Link href="/" className="flex items-center gap-3 hover:opacity-80 transition-opacity">
+            <img src={logoUrl} alt="Transcend" className="h-6 w-auto select-none" draggable={false} />
+            <span className="hidden sm:block pl-3 border-l border-border text-[9px] font-display font-bold uppercase tracking-[0.18em] text-muted-foreground leading-tight">
+              Model<br />Advisor
+            </span>
           </Link>
           <div className="flex items-center gap-1">
-            <Link href={`/ccl-v2/${sessionId}`}>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-7 px-2 text-xs text-emerald-700 hover:text-emerald-800"
-                title="Open this session in v2 (Path A / Path B)"
-              >
-                Try v2
-              </Button>
-            </Link>
             <Button
               variant="ghost"
               size="sm"
@@ -410,40 +672,66 @@ export default function Workflow() {
           </div>
         </div>
 
-        {/* Row 2: horizontal step chevrons */}
+        {/* Row 2: horizontal step chevrons (v2: dynamic by path) */}
         <div className="flex items-center px-4 pb-2 gap-0 overflow-x-auto">
-          {WORKFLOW_STEPS.filter((step) => {
-            // Step 8 only visible once step 7 is completed or a model has been selected
-            if (step.number === 8) {
-              return stepsCompleted.includes(7) || !!(stepData["8"]?.selectedModelId);
+          {filteredHeaderRows.map((row, idx) => {
+            if (row.type === "pathPicker") {
+              const isPickActive = !!showPathPicker;
+              return (
+                <div key="path-picker" className="flex items-center shrink-0">
+                  {idx > 0 && <ChevronRight className="w-3.5 h-3.5 text-muted-foreground/40 mx-0.5 shrink-0" />}
+                  <div
+                    role="presentation"
+                    className={cn(
+                      "flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-colors whitespace-nowrap pointer-events-none",
+                      isPickActive && "bg-primary text-white shadow-sm",
+                      !isPickActive && "bg-muted/60 text-muted-foreground border border-border/60",
+                    )}
+                    data-testid="pill-choose-path"
+                  >
+                    <span className="w-4.5 h-4.5 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 bg-white/15">
+                      <Split className="w-3 h-3" />
+                    </span>
+                    <span className="hidden sm:inline">Choose your path</span>
+                  </div>
+                </div>
+              );
             }
-            return true;
-          }).map((step, idx) => {
+
+            const step = row.step;
             const isCompleted = stepsCompleted.includes(step.number);
-            const isActive = activeStep === step.number;
-            // All steps are always accessible for free navigation
-            const isAccessible = true;
 
-            // A step has partial progress if it has structured data saved but isn't confirmed yet.
-            // Chat/context conversations are stored separately and are intentionally excluded here.
-            const stepDataForStep = stepData[String(step.number)];
-            const hasProgress = !isCompleted && !!stepDataForStep && Object.keys(stepDataForStep).length > 0;
+            let isActive = activeStep === step.number;
+            if (showPathPicker) {
+              isActive = false;
+            }
 
-            // Step 8 label can show model name if selected
+            let progressDataKey: string | "experience" = String(step.number);
+            if (designScope === "specific_experience") {
+              if (step.number === 2) progressDataKey = "experience";
+              else if (step.number === 3) progressDataKey = "2";
+            }
+            const stepDataForStep = stepData[progressDataKey];
+            const hasProgress =
+              !isCompleted && !!stepDataForStep && typeof stepDataForStep === "object" && Object.keys(stepDataForStep).length > 0;
+
             const step8Label = step.number === 8 && stepData["8"]?.selectedModelId
               ? "Explore Model"
               : step.label;
+
+            const Icon = step.icon || STEP_ICONS[step.number];
 
             return (
               <div key={step.number} className="flex items-center shrink-0">
                 {idx > 0 && <ChevronRight className="w-3.5 h-3.5 text-muted-foreground/40 mx-0.5 shrink-0" />}
                 <button
-                  onClick={() => { setTransitionToStep(null); setActiveStep(step.number); }}
+                  type="button"
+                  onClick={() => { userManuallyNavigatedRef.current = true; setTransitionToStep(null); setActiveStep(step.number); }}
                   className={cn(
                     "flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-colors whitespace-nowrap",
                     isActive && "bg-primary text-white shadow-sm",
                     isCompleted && !isActive && "bg-primary/10 text-primary hover:bg-primary/20",
-                    hasProgress && !isActive && "bg-amber-50 text-amber-700 hover:bg-amber-100",
+                    hasProgress && !isActive && !isCompleted && "bg-amber-50 text-amber-700 hover:bg-amber-100",
                     !isActive && !isCompleted && !hasProgress && "bg-muted/60 text-muted-foreground hover:bg-muted",
                   )}
                   data-testid={`button-step-${step.number}`}
@@ -452,9 +740,17 @@ export default function Workflow() {
                     "w-4.5 h-4.5 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0",
                     isActive && "bg-white/20",
                     isCompleted && !isActive && "bg-primary text-white",
-                    hasProgress && !isActive && "bg-amber-200 text-amber-700",
+                    hasProgress && !isActive && !isCompleted && "bg-amber-200 text-amber-700",
                   )}>
-                    {isCompleted ? <Check className="w-3 h-3" /> : step.number === 0 ? <CloudUpload className="w-3 h-3" /> : step.number === 8 ? <Bot className="w-3 h-3" /> : step.number}
+                    {isCompleted ? (
+                      <Check className="w-3 h-3" />
+                    ) : Icon ? (
+                      <Icon className="w-3 h-3" />
+                    ) : step.number === 8 ? (
+                      <Bot className="w-3 h-3" />
+                    ) : (
+                      step.number
+                    )}
                   </span>
                   <span className="hidden sm:inline">{step.number === 8 ? step8Label : step.label}</span>
                 </button>
@@ -466,12 +762,18 @@ export default function Workflow() {
 
       {/* Main Content Area — full width */}
       <main className="flex-1 min-h-0 overflow-hidden flex">
-        {transitionToStep !== null ? (
+        {showPathPicker ? (
+          <PathPickerPanel
+            onPick={handlePickPath}
+            onBack={() => { setShowPathPicker(false); setActiveStep(1); }}
+          />
+        ) : transitionToStep !== null ? (
           <StepTransitionPage
             stepNumber={transitionToStep}
             onContinue={handleTransitionContinue}
             onBack={handleTransitionBack}
             isLoading={confirmStepMutation.isPending}
+            designScope={designScope}
           />
         ) : (
           <StepContent
@@ -483,9 +785,12 @@ export default function Workflow() {
             onResetStep={(step) => resetStepMutation.mutate(step)}
             isConfirming={confirmStepMutation.isPending}
             onAdvanceFromIntro={handleAdvanceFromIntro}
+            onAdvanceFromPathADocuments={handleAdvanceFromPathADocuments}
             onExploreModel={handleExploreModel}
             onGoToStep={setActiveStep}
             recommendRefreshKey={recommendRefreshKey}
+            designScope={designScope}
+            onShowPathPicker={() => setShowPathPicker(true)}
           />
         )}
       </main>
@@ -502,9 +807,14 @@ interface StepContentProps {
   onResetStep: (step: number) => void;
   isConfirming: boolean;
   onAdvanceFromIntro: () => void;
+  /** Path A (v2): after whole-program Documents (step 0), advance to Aims (step 2) instead of School. */
+  onAdvanceFromPathADocuments?: () => void;
   onExploreModel: (modelId: number) => void;
   onGoToStep: (step: number) => void;
   recommendRefreshKey?: number;
+  // v2: design scope and path picker re-entry
+  designScope?: DesignScope;
+  onShowPathPicker?: () => void;
 }
 
 // Steps that have taxonomy-based structured selection panels
@@ -544,14 +854,31 @@ const STEP_TAXONOMY_CONFIG: Record<number, StepTaxonomyConfig> = {
   },
 };
 
-function StepContent({ sessionId, stepNumber, stepData, stepsCompleted, onConfirmStep, onResetStep, isConfirming, onAdvanceFromIntro, onExploreModel, onGoToStep, recommendRefreshKey = 0 }: StepContentProps) {
+function StepContent({ sessionId, stepNumber, stepData, stepsCompleted, onConfirmStep, onResetStep, isConfirming, onAdvanceFromIntro, onAdvanceFromPathADocuments, onExploreModel, onGoToStep, recommendRefreshKey = 0, designScope, onShowPathPicker }: StepContentProps) {
+  const isPathB = designScope === "specific_experience";
+
   // Step 0: full-screen intro upload (no split panel)
+  // Path B skips the standalone documents step — uploads happen inside the
+  // Experience step instead.
   if (stepNumber === 0) {
+    if (isPathB) {
+      return (
+        <SchoolContextQuestionnaire
+          sessionId={sessionId}
+          stepData={stepData}
+          onConfirm={() => onConfirmStep(1)}
+        />
+      );
+    }
+    const advanceFromDocs =
+      designScope === "whole_program" && onAdvanceFromPathADocuments
+        ? onAdvanceFromPathADocuments
+        : onAdvanceFromIntro;
     return (
       <IntroUploadPanel
         sessionId={sessionId}
-        onNext={onAdvanceFromIntro}
-        onSkip={onAdvanceFromIntro}
+        onNext={advanceFromDocs}
+        onSkip={advanceFromDocs}
       />
     );
   }
@@ -567,24 +894,60 @@ function StepContent({ sessionId, stepNumber, stepData, stepsCompleted, onConfir
     );
   }
 
-  // Step 2: full-screen aims questionnaire (no split panel, no chat)
+  // Step 2:
+  // - Path A: Outcomes (was "Aims for Learners" — now only outcomes screens)
+  // - Path B: Define Your Experience panel
   if (stepNumber === 2) {
+    if (isPathB) {
+      return (
+        <ExperienceDefinitionPanel
+          sessionId={sessionId}
+          stepData={stepData}
+          onConfirm={() => onConfirmStep(2)}
+        />
+      );
+    }
     return (
       <AimsForLearnersQuestionnaire
         sessionId={sessionId}
         stepData={stepData}
+        mode="outcomes"
         onConfirm={() => onConfirmStep(2)}
       />
     );
   }
 
-  // Step 3: full-screen practices questionnaire (no split panel, no chat)
+  // Step 3:
+  // - Path A: Practices
+  // - Path B: Outcomes (reads/writes stepData["2"])
   if (stepNumber === 3) {
+    if (isPathB) {
+      return (
+        <AimsForLearnersQuestionnaire
+          sessionId={sessionId}
+          stepData={stepData}
+          mode="outcomes"
+          onConfirm={() => onConfirmStep(3)}
+        />
+      );
+    }
     return (
       <PracticesQuestionnaire
         sessionId={sessionId}
         stepData={stepData}
         onConfirm={() => onConfirmStep(3)}
+      />
+    );
+  }
+
+  // Step 9: LEAPs (both paths) — reads/writes stepData["2"]
+  if (stepNumber === 9) {
+    return (
+      <AimsForLearnersQuestionnaire
+        sessionId={sessionId}
+        stepData={stepData}
+        mode="leaps"
+        onConfirm={() => onConfirmStep(9)}
       />
     );
   }
@@ -620,6 +983,7 @@ function StepContent({ sessionId, stepNumber, stepData, stepsCompleted, onConfir
         onGoToStep={onGoToStep}
         onConfirm={() => onConfirmStep(6)}
         isConfirming={isConfirming}
+        designScope={designScope}
       />
     );
   }
@@ -779,6 +1143,656 @@ function StepContent({ sessionId, stepNumber, stepData, stepsCompleted, onConfir
         </div>
       </ResizablePanel>
     </ResizablePanelGroup>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// v2: Path Picker — shown after Step 1 (School Context) is confirmed.
+// Lets the user choose between defining aims for their whole CCL program
+// (Path A — same as v1) or defining a specific experience (Path B —
+// inserts a new Experience step before Aims and removes the standalone
+// Practices step). The choice persists to stepData.designScope.
+// ---------------------------------------------------------------------------
+
+interface PathPickerPanelProps {
+  onPick: (scope: DesignScope) => void;
+  onBack: () => void;
+}
+
+function PathPickerPanel({ onPick, onBack }: PathPickerPanelProps) {
+  return (
+    <div className="w-full h-full overflow-auto bg-background">
+      <div className="flex flex-col items-center justify-center min-h-full px-6 py-16">
+        <div className="w-full max-w-3xl space-y-8">
+          <div className="text-center space-y-3">
+            <p className="text-xs font-semibold uppercase tracking-widest text-primary">Up next</p>
+            <h1 className="text-4xl font-display font-bold text-foreground leading-tight">
+              Choose your path
+            </h1>
+            <p className="text-muted-foreground text-base max-w-2xl mx-auto leading-relaxed">
+              Your answer shapes the rest of the flow. Either path leads to model recommendations; the questions and structure adjust to match.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <button
+              type="button"
+              onClick={() => onPick("whole_program")}
+              className="text-left rounded-xl border-2 border-border bg-card p-6 transition-all hover:border-primary hover:bg-primary/5"
+              data-testid="button-path-whole-program"
+            >
+              <div className="space-y-3">
+                <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center">
+                  <Target className="w-5 h-5 text-primary" />
+                </div>
+                <h3 className="text-lg font-display font-semibold text-foreground">
+                  Define aims for our CCL program
+                </h3>
+                <p className="text-sm text-muted-foreground leading-relaxed">
+                  Capture goals for your whole career-connected learning program and find models that fit those aspirations.
+                </p>
+                <p className="text-xs text-muted-foreground/80 pt-2">
+                  Walks through aims, practices, and system elements at the program level.
+                </p>
+              </div>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => onPick("specific_experience")}
+              className="text-left rounded-xl border-2 border-border bg-card p-6 transition-all hover:border-primary hover:bg-primary/5"
+              data-testid="button-path-specific-experience"
+            >
+              <div className="space-y-3">
+                <div className="w-10 h-10 rounded-lg bg-emerald-500/10 flex items-center justify-center">
+                  <BookOpen className="w-5 h-5 text-emerald-700" />
+                </div>
+                <h3 className="text-lg font-display font-semibold text-foreground">
+                  Define a specific experience
+                </h3>
+                <p className="text-sm text-muted-foreground leading-relaxed">
+                  Describe the experience you're building and the practices it should incorporate, then find models you could adopt.
+                </p>
+                <p className="text-xs text-muted-foreground/80 pt-2">
+                  Starts with experience details + practices, then walks through aims and system elements.
+                </p>
+              </div>
+            </button>
+          </div>
+
+          <p className="text-center text-xs text-muted-foreground">
+            You can change your mind later by resetting the workflow.
+          </p>
+        </div>
+      </div>
+
+      <div className="fixed bottom-8 left-1/2 -translate-x-1/2 flex flex-row gap-2 z-50">
+        <button
+          type="button"
+          onClick={onBack}
+          title="Back"
+          className="w-10 h-10 rounded-lg border border-border bg-background shadow-md flex items-center justify-center hover:bg-muted transition-colors"
+        >
+          <ChevronLeft className="w-4 h-4 text-foreground" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// v2: Experience Definition Panel (Path B Step 2)
+// ---------------------------------------------------------------------------
+//
+// Four sub-steps in one Define Experience rail: Upload → Experience details (incl. primary practices)
+// → Additional practices → Prioritized practices — PracticesQuestionnaire (embed) skips its own rails here.
+
+interface ExperienceDefinitionPanelProps {
+  sessionId: string;
+  stepData: Record<string, any>;
+  onConfirm: () => void;
+}
+
+type ExperienceScreen = 1 | 2 | 3 | 4 | 5;
+
+function ExperienceDefinitionPanel({ sessionId, stepData, onConfirm }: ExperienceDefinitionPanelProps) {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+
+  // Always open at Experience Details (screen 2) when remounting — upload (screen 1)
+  // is a one-time action and users re-entering via chevron or transition-back want details.
+  const [screen, setScreen] = useState<ExperienceScreen>(2);
+  const practicesQuestionnaireRef = useRef<PracticesQuestionnaireHandle>(null);
+  const [animKey, setAnimKey] = useState(0);
+  const [isSaving, setIsSaving] = useState(false);
+
+  const exp = (stepData.experience as Record<string, any>) || {};
+  const [name, setName] = useState<string>(typeof exp.name === "string" ? exp.name : "");
+  const [description, setDescription] = useState<string>(exp.description || "");
+  const [targetedGradeBands, setTargetedGradeBands] = useState<string[]>(exp.targetedGradeBands || []);
+
+  const primInit = ((exp.primaryPractices || []) as TaxonomySelection[]);
+  const [primaryId1, setPrimaryId1] = useState<string>(
+    primInit[0]?.id != null ? String(primInit[0].id) : "",
+  );
+  const [primaryId2, setPrimaryId2] = useState<string>(
+    primInit[1]?.id != null ? String(primInit[1].id) : "",
+  );
+
+  // Prefill animation state (mirrors IntroUploadPanel)
+  const [prefillStatus, setPrefillStatus] = useState<null | "prefilling" | "done">(null);
+  const [prefillMsgIdx, setPrefillMsgIdx] = useState(0);
+
+  useEffect(() => {
+    if (prefillStatus !== "prefilling") return;
+    const timer = setInterval(() => {
+      setPrefillMsgIdx((i) => Math.min(i + 1, PRE_FILL_MESSAGES.length - 2));
+    }, 1800);
+    return () => clearInterval(timer);
+  }, [prefillStatus]);
+
+  const { data: taxonomyItemsRaw = [], isLoading: isLoadingTaxonomy } = useTaxonomyItems(3);
+  const practices = useMemo(() => (
+    ((taxonomyItemsRaw as TaxonomyItem[]) || []).filter((t) => t.category === "practice")
+      .sort((a, b) => a.name.localeCompare(b.name))
+  ), [taxonomyItemsRaw]);
+
+  const practiceById = useMemo(() => {
+    const m = new Map<number, TaxonomyItem>();
+    practices.forEach((p) => m.set(p.id, p));
+    return m;
+  }, [practices]);
+
+  const fileRef = useRef<HTMLInputElement>(null);
+  const { data: docs = [], refetch: refetchDocs } = useStepDocuments(sessionId, 0);
+  const [isDragOver, setIsDragOver] = useState(false);
+
+  const uploadMutation = useMutation({
+    mutationFn: (file: File) => uploadDocumentFile(file, sessionId, 0),
+    onSuccess: () => refetchDocs(),
+    onError: () => toast({ title: "Upload failed", description: "Please try again.", variant: "destructive" }),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async (docId: number) => {
+      const res = await fetch(
+        `/api/sessions/${sessionId}/workflow/documents/${docId}`,
+        { method: "DELETE", credentials: "include" },
+      );
+      if (!res.ok) throw new Error("Delete failed");
+    },
+    onSuccess: () => refetchDocs(),
+  });
+
+  useEffect(() => {
+    const e = (stepData.experience as Record<string, any>) || {};
+    if (typeof e.name === "string" && !name.trim() && e.name.trim()) setName(e.name);
+    if (e.description && !description) setDescription(e.description);
+    if ((e.targetedGradeBands?.length ?? 0) > 0 && targetedGradeBands.length === 0) {
+      setTargetedGradeBands(e.targetedGradeBands);
+    }
+    // Sync primary practices from prefill
+    const prims = (e.primaryPractices || []) as TaxonomySelection[];
+    if (prims.length > 0 && !primaryId1) {
+      setPrimaryId1(prims[0]?.id != null ? String(prims[0].id) : "");
+      setPrimaryId2(prims[1]?.id != null ? String(prims[1].id) : "");
+    }
+  }, [JSON.stringify(stepData.experience)]);
+
+  const schoolBands: string[] = useMemo(() => {
+    const s1 = (stepData["1"] as Record<string, any>) || {};
+    if (Array.isArray(s1.grade_bands)) return s1.grade_bands;
+    if (s1.grade_band) return [s1.grade_band];
+    return [];
+  }, [stepData["1"]]);
+
+  const availableGradeOptions: string[] = useMemo(() => (
+    schoolBands
+      .flatMap((b) => EXPERIENCE_GRADE_OPTIONS[b] || [])
+      .filter((v, idx, a) => a.indexOf(v) === idx)
+  ), [schoolBands]);
+
+  const goToScreen = (n: ExperienceScreen) => {
+    setScreen(n);
+    setAnimKey((k) => k + 1);
+  };
+
+  /** Primary taxonomy IDs — from saved experience and current form. */
+  const pathBPrimaryPracticeIds = useMemo(() => {
+    const ids = new Set<number>();
+    const fromExp = ((stepData.experience as Record<string, any>)?.primaryPractices || []) as TaxonomySelection[];
+    fromExp.forEach((p) => { if (p?.id != null) ids.add(Number(p.id)); });
+    for (const sid of [primaryId1, primaryId2]) {
+      if (sid) ids.add(Number(sid));
+    }
+    return Array.from(ids);
+  }, [stepData.experience, primaryId1, primaryId2]);
+
+  const buildPrimarySelections = (): TaxonomySelection[] => {
+    const out: TaxonomySelection[] = [];
+    for (const sid of [primaryId1, primaryId2]) {
+      if (!sid) continue;
+      const id = Number(sid);
+      const item = practiceById.get(id);
+      if (item && !out.some((x) => x.id === item.id)) {
+        out.push({ id: item.id, name: item.name, importance: "most_important" });
+      }
+    }
+    return out;
+  };
+
+  // Toggle a primary practice card (screen 3)
+  const togglePrimary = (id: number) => {
+    const sid = String(id);
+    if (primaryId1 === sid) { setPrimaryId1(primaryId2); setPrimaryId2(""); return; }
+    if (primaryId2 === sid) { setPrimaryId2(""); return; }
+    if (!primaryId1) { setPrimaryId1(sid); return; }
+    if (!primaryId2) { setPrimaryId2(sid); return; }
+    // Both slots full — tooltip handles the message, card is disabled
+  };
+
+  const persistDetails = async () => {
+    const currentProgress = await fetch(
+      buildUrl(api.workflow.getProgress.path, { sessionId }),
+      { credentials: "include" },
+    ).then((r) => r.json());
+    const sd = { ...(currentProgress.stepData || {}) };
+    const trimmedName = name.trim();
+    sd.experience = {
+      ...(sd.experience || {}),
+      name: trimmedName === "" ? null : trimmedName,
+      description,
+      targetedGradeBands,
+    };
+    await fetch(buildUrl(api.workflow.updateProgress.path, { sessionId }), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ currentStep: currentProgress.currentStep, stepsCompleted: currentProgress.stepsCompleted, stepData: sd }),
+      credentials: "include",
+    });
+    qc.invalidateQueries({ queryKey: [api.workflow.getProgress.path, sessionId] });
+  };
+
+  const persistPrimaryPracticesThenMerge = async () => {
+    const primarySel = buildPrimarySelections();
+    const currentProgress = await fetch(
+      buildUrl(api.workflow.getProgress.path, { sessionId }),
+      { credentials: "include" },
+    ).then((r) => r.json());
+    const sd = { ...(currentProgress.stepData || {}) };
+    sd.experience = { ...(sd.experience || {}), primaryPractices: primarySel };
+    const existing = ((sd["3"]?.selected_practices || []) as TaxonomySelection[]);
+    const primaryIds = new Set(primarySel.map((p) => p.id));
+    const rest = existing.filter((s) => !primaryIds.has(s.id));
+    sd["3"] = { ...(sd["3"] || {}), selected_practices: [...primarySel, ...rest] };
+    await fetch(buildUrl(api.workflow.updateProgress.path, { sessionId }), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ currentStep: currentProgress.currentStep, stepsCompleted: currentProgress.stepsCompleted, stepData: sd }),
+      credentials: "include",
+    });
+    qc.invalidateQueries({ queryKey: [api.workflow.getProgress.path, sessionId] });
+  };
+
+  const runPrefill = async (): Promise<void> => {
+    if (docs.length === 0) return;
+    setPrefillStatus("prefilling");
+    setPrefillMsgIdx(0);
+    try {
+      const url = buildUrl(api.workflow.prefillFromDocuments.path, { sessionId });
+      await fetch(url, { method: "POST", credentials: "include" });
+      qc.invalidateQueries({ queryKey: [api.workflow.getProgress.path, sessionId] });
+      setPrefillMsgIdx(PRE_FILL_MESSAGES.length - 1);
+      setPrefillStatus("done");
+      await new Promise<void>((res) => setTimeout(res, 1200));
+      toast({ title: "Documents analyzed", description: "We've prefilled what we could — verify below." });
+    } catch {
+      toast({ title: "Analysis failed", description: "Couldn't pre-fill from documents. Continue manually.", variant: "destructive" });
+    } finally {
+      setPrefillStatus(null);
+    }
+  };
+
+  const handleFiles = (files: FileList | null) => {
+    if (!files) return;
+    Array.from(files).forEach((f) => uploadMutation.mutate(f));
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(false);
+    handleFiles(e.dataTransfer.files);
+  };
+
+  const goNext = async () => {
+    if (isSaving) return;
+    if (screen >= 4) {
+      setIsSaving(true);
+      try { await practicesQuestionnaireRef.current?.advance(); }
+      finally { setIsSaving(false); }
+      return;
+    }
+    setIsSaving(true);
+    try {
+      if (screen === 1) {
+        await runPrefill();
+        goToScreen(2);
+      } else if (screen === 2) {
+        await persistDetails();
+        await qc.refetchQueries({ queryKey: [api.workflow.getProgress.path, sessionId] });
+        goToScreen(3);
+      } else if (screen === 3) {
+        await persistPrimaryPracticesThenMerge();
+        await qc.refetchQueries({ queryKey: [api.workflow.getProgress.path, sessionId] });
+        goToScreen(4);
+      }
+    } catch {
+      toast({ title: "Save failed", description: "Couldn't save.", variant: "destructive" });
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const goBack = () => {
+    if (screen >= 4) {
+      practicesQuestionnaireRef.current?.retreat();
+      return;
+    }
+    if (screen === 1) return;
+    goToScreen((screen - 1) as ExperienceScreen);
+  };
+
+  const innerStepLabel = ["Upload", "Experience details", "Primary practices", "Additional practices", "Prioritized practices"];
+  const isPrefilling = prefillStatus === "prefilling" || prefillStatus === "done";
+
+  const renderUpload = () => (
+    <div className="flex flex-col items-center justify-center min-h-full px-6 py-16 relative">
+      {/* Prefill animation overlay */}
+      {isPrefilling && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/90 backdrop-blur-sm">
+          <div className="text-center space-y-8 px-8 max-w-sm">
+            <div className="relative w-20 h-20 mx-auto">
+              <div className="absolute inset-0 rounded-full border-2 border-primary/20 animate-spin border-t-primary" style={{ animationDuration: "1.4s" }} />
+              <div className="absolute inset-2 rounded-full border border-primary/10 animate-spin border-t-primary/60" style={{ animationDuration: "2.1s", animationDirection: "reverse" }} />
+              <div className="absolute inset-0 flex items-center justify-center">
+                <Sparkles className="w-7 h-7 text-primary animate-pulse" />
+              </div>
+            </div>
+            <div className="space-y-2">
+              <p className="text-foreground font-semibold text-lg leading-snug">{PRE_FILL_MESSAGES[prefillMsgIdx]}</p>
+              <p className="text-muted-foreground text-sm">Analyzing your documents — just a moment</p>
+            </div>
+            <div className="flex justify-center gap-2">
+              {PRE_FILL_MESSAGES.slice(0, -1).map((_, i) => (
+                <div key={i} className={cn("w-1.5 h-1.5 rounded-full transition-all duration-500", i <= prefillMsgIdx ? "bg-primary" : "bg-muted-foreground/20")} />
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="w-full max-w-2xl space-y-6">
+        <div className="space-y-2">
+          <p className="text-xs font-semibold uppercase tracking-widest text-emerald-700">Define your experience · 1 of 5</p>
+          <h1 className="text-3xl font-display font-bold text-foreground leading-tight">
+            Upload any documents that describe this experience
+          </h1>
+          <p className="text-muted-foreground text-base leading-relaxed">
+            Optional. Drop a write-up or blueprint and we'll pre-fill the next steps where we can.
+          </p>
+        </div>
+
+        <input ref={fileRef} type="file" multiple accept=".pdf,.docx,.pptx,.txt,.md,.doc,.ppt" className="hidden" onChange={(e) => handleFiles(e.target.files)} />
+        <div
+          role="presentation"
+          onClick={() => fileRef.current?.click()}
+          onDrop={handleDrop}
+          onDragOver={(e) => { e.preventDefault(); setIsDragOver(true); }}
+          onDragLeave={() => setIsDragOver(false)}
+          className={cn(
+            "rounded-xl border-2 border-dashed p-10 text-center cursor-pointer transition-all duration-200",
+            isDragOver ? "border-primary bg-primary/5" : "border-border bg-muted/30 hover:border-primary/40 hover:bg-muted/50",
+          )}
+        >
+          {uploadMutation.isPending ? (
+            <div className="flex flex-col items-center gap-3">
+              <Loader2 className="w-8 h-8 text-primary animate-spin" />
+              <p className="text-muted-foreground text-sm">Uploading...</p>
+            </div>
+          ) : (
+            <div className="flex flex-col items-center gap-3">
+              <CloudUpload className={cn("w-10 h-10 transition-colors", isDragOver ? "text-primary" : "text-muted-foreground/50")} />
+              <div>
+                <p className="text-foreground text-sm font-medium">{isDragOver ? "Drop files here" : "Drag & drop files, or click to browse"}</p>
+                <p className="text-muted-foreground text-xs mt-1">PDF, DOCX, PPTX, TXT supported</p>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {docs.length > 0 && (
+          <div className="space-y-2">
+            {docs.map((doc) => (
+              <div key={doc.id} className="flex items-start gap-3 p-3 rounded-lg border border-border bg-card">
+                <FileText className="w-4 h-4 text-primary shrink-0 mt-0.5" />
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm text-foreground font-medium truncate">{doc.fileName}</p>
+                </div>
+                <button type="button" onClick={(e) => { e.stopPropagation(); deleteMutation.mutate(doc.id); }}
+                  className="p-1 rounded text-muted-foreground/50 hover:text-muted-foreground hover:bg-muted transition-colors shrink-0" title="Remove">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
+  const renderForm = () => (
+    <div className="space-y-8 max-w-2xl">
+      <div className="space-y-2">
+        <p className="text-xs font-semibold uppercase tracking-widest text-emerald-700">Define your experience · 2 of 5</p>
+        <h1 className="text-3xl font-display font-bold text-foreground leading-tight">Experience details</h1>
+        <p className="text-muted-foreground text-base leading-relaxed">
+          Name your experience, describe it, and set the grade levels it targets.
+        </p>
+      </div>
+
+      <div className="space-y-2">
+        <Label className="text-sm font-medium">Experience name</Label>
+        <Input value={name} onChange={(e) => setName(e.target.value)} placeholder='Optional — e.g. "Capstone Studio"' className="text-base max-w-xl" />
+      </div>
+
+      <div className="space-y-2">
+        <Label className="text-sm font-medium">Description</Label>
+        <Textarea value={description} onChange={(e) => setDescription(e.target.value)}
+          placeholder="What is it, who is it for, what makes it distinctive?" rows={5} className="text-base resize-none max-w-2xl" />
+      </div>
+
+      <div className="space-y-2">
+        <Label className="text-sm font-medium">Targeted grade levels</Label>
+        {availableGradeOptions.length === 0 ? (
+          <p className="text-sm text-muted-foreground rounded-lg border border-dashed border-border bg-muted/20 p-4">
+            Set grade bands on School Context, or skip for now.
+          </p>
+        ) : (
+          <div className="flex flex-wrap gap-2 max-w-2xl">
+            {availableGradeOptions.map((grade) => {
+              const selected = targetedGradeBands.includes(grade);
+              return (
+                <button key={grade} type="button"
+                  onClick={() => { if (selected) setTargetedGradeBands(targetedGradeBands.filter((g) => g !== grade)); else setTargetedGradeBands([...targetedGradeBands, grade]); }}
+                  className={cn("px-4 py-2 rounded-full border-2 text-sm font-medium transition-all",
+                    selected ? "border-primary bg-primary text-white" : "border-border bg-background hover:border-primary/60 hover:bg-primary/5 text-foreground")}>
+                  {grade === "Post-secondary" ? grade : `Grade ${grade}`}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
+  const renderPrimaryPractices = () => {
+    const selectedCount = [primaryId1, primaryId2].filter(Boolean).length;
+    const isMaxed = selectedCount >= 2;
+
+    return (
+      <div className="space-y-6 max-w-3xl">
+        <div className="space-y-2">
+          <p className="text-xs font-semibold uppercase tracking-widest text-emerald-700">Define your experience · 3 of 5</p>
+          <h1 className="text-3xl font-display font-bold text-foreground leading-tight">Choose your primary practices</h1>
+          <p className="text-muted-foreground text-base leading-relaxed max-w-2xl">
+            Primary practices filter the models we recommend — only models built around these practices will appear in your results. Select up to 2, and only if they are the absolute core focus of this experience. Leave blank to see all models.
+          </p>
+        </div>
+
+        {isLoadingTaxonomy ? (
+          <p className="text-sm text-muted-foreground flex items-center gap-2">
+            <Loader2 className="w-4 h-4 animate-spin" /> Loading practices...
+          </p>
+        ) : (
+          <>
+            {selectedCount > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {[primaryId1, primaryId2].filter(Boolean).map((sid) => {
+                  const p = practiceById.get(Number(sid));
+                  return p ? (
+                    <span key={sid} className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-primary/10 text-primary text-xs font-medium border border-primary/20">
+                      {p.name}
+                      <button type="button" onClick={() => togglePrimary(Number(sid))} className="hover:text-primary/60 transition-colors">
+                        <X className="w-3 h-3" />
+                      </button>
+                    </span>
+                  ) : null;
+                })}
+              </div>
+            )}
+
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+              {practices.map((p) => {
+                const sid = String(p.id);
+                const isSelected = primaryId1 === sid || primaryId2 === sid;
+                const isDisabled = isMaxed && !isSelected;
+
+                const card = (
+                  <button
+                    key={p.id}
+                    type="button"
+                    disabled={isDisabled}
+                    onClick={() => togglePrimary(p.id)}
+                    className={cn(
+                      "flex items-center gap-2 px-3 py-2.5 rounded-md border text-left text-sm font-medium transition-all",
+                      isSelected
+                        ? "border-primary/40 bg-primary/5 text-primary"
+                        : isDisabled
+                          ? "border-border/30 bg-muted/20 text-muted-foreground/40 cursor-not-allowed"
+                          : "border-border bg-white hover:border-primary/40 hover:bg-primary/5 text-foreground cursor-pointer",
+                    )}
+                  >
+                    <Checkbox checked={isSelected} className="h-3.5 w-3.5 shrink-0 pointer-events-none" />
+                    <span className="leading-snug">{p.name}</span>
+                  </button>
+                );
+
+                if (isDisabled) {
+                  return (
+                    <Tooltip key={p.id}>
+                      <TooltipTrigger asChild>{card}</TooltipTrigger>
+                      <TooltipContent side="top" className="text-xs max-w-[200px]">
+                        Unselect a practice above to choose a different one
+                      </TooltipContent>
+                    </Tooltip>
+                  );
+                }
+                return card;
+              })}
+            </div>
+          </>
+        )}
+      </div>
+    );
+  };
+
+  const subIndicator = (
+    <div className="flex items-center gap-1 flex-wrap">
+      {innerStepLabel.map((label, idx) => {
+        const stepNum = (idx + 1) as ExperienceScreen;
+        const isActive = screen === stepNum;
+        const isDone = screen > stepNum;
+        return (
+          <div key={label} className="flex items-center">
+            <button
+              type="button"
+              onClick={() => goToScreen(stepNum)}
+              className={cn(
+                "flex items-center gap-1.5 rounded-md px-1 py-0.5 transition-colors",
+                isActive ? "" : "hover:bg-muted/50",
+              )}
+            >
+              <div className={cn(
+                "w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0",
+                isActive ? "bg-primary text-white" : isDone ? "bg-primary/20 text-primary" : "bg-muted text-muted-foreground",
+              )}>
+                {isDone ? <Check className="w-3 h-3" /> : stepNum}
+              </div>
+              <span className={cn("text-[11px] font-medium whitespace-nowrap", isActive ? "text-foreground" : "text-muted-foreground")}>
+                {label}
+              </span>
+            </button>
+            {idx < innerStepLabel.length - 1 && <div className="w-4 h-px bg-border mx-1" />}
+          </div>
+        );
+      })}
+    </div>
+  );
+
+  return (
+    <div className="w-full h-full overflow-auto bg-background flex flex-col">
+      <div className="flex-shrink-0 px-8 pt-10 pb-4 max-w-5xl mx-auto w-full">{subIndicator}</div>
+
+      {screen <= 3 ? (
+        <div className={cn("flex-1", screen === 1 ? "relative" : "flex flex-col items-start justify-start px-8 pb-24")}>
+          <div
+            className={cn(screen !== 1 && "w-full max-w-5xl space-y-8")}
+            key={animKey}
+            style={{ animation: "schoolFadeIn 0.25s ease forwards" }}
+          >
+            {screen === 1 && renderUpload()}
+            {screen === 2 && renderForm()}
+            {screen === 3 && renderPrimaryPractices()}
+          </div>
+        </div>
+      ) : (
+        <PracticesQuestionnaire
+          ref={practicesQuestionnaireRef}
+          sessionId={sessionId}
+          stepData={stepData}
+          variant="pathBExperienceAddition"
+          pathBPrimaryPracticeIds={pathBPrimaryPracticeIds}
+          pathBHideSubStepIndicator
+          pathBHideFloatingNav
+          pathBControlledStep={screen === 4 ? 1 : 2}
+          onPathBControlledStepChange={(pq) => setScreen(pq === 1 ? 4 : 5)}
+          onEmbeddedBack={() => goToScreen(3)}
+          onConfirm={onConfirm}
+        />
+      )}
+
+      <div className="fixed bottom-8 left-1/2 -translate-x-1/2 flex flex-row gap-2 z-50">
+        <button type="button" onClick={goBack} disabled={screen === 1 || isPrefilling} title="Previous"
+          className="w-10 h-10 rounded-lg border border-border bg-background shadow-md flex items-center justify-center hover:bg-muted disabled:opacity-30 transition-colors">
+          <ChevronLeft className="w-4 h-4 text-foreground" />
+        </button>
+        <button type="button" onClick={goNext} disabled={isSaving || isPrefilling}
+          className="w-10 h-10 rounded-lg border border-border bg-background shadow-md flex items-center justify-center hover:bg-muted disabled:opacity-30 transition-colors">
+          {isSaving ? <Loader2 className="w-4 h-4 text-foreground animate-spin" /> : <ChevronRight className="w-4 h-4 text-foreground" />}
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -1084,12 +2098,11 @@ interface SchoolContextQuestionnaireProps {
 function SchoolContextQuestionnaire({ sessionId, stepData, onConfirm }: SchoolContextQuestionnaireProps) {
   const qc = useQueryClient();
   const { toast } = useToast();
-  const [screen, setScreen] = useState<1 | 2 | 3 | 4>(1);
+  const [screen, setScreen] = useState<1 | 2 | 3>(1);
   const [animKey, setAnimKey] = useState(0);
 
   // Fields — pre-fill from stepData["1"] if available
   const prefilled = stepData["1"] || {};
-  const [schoolName, setSchoolName] = useState(prefilled.school_name || "");
   const [district, setDistrict] = useState(prefilled.district || "");
   const [state, setState] = useState(prefilled.state || "");
   const knownBands = ["K-5", "6-8", "9-12", "Post-secondary"];
@@ -1109,13 +2122,12 @@ function SchoolContextQuestionnaire({ sessionId, stepData, onConfirm }: SchoolCo
 
   const { recordingState, handleStartRecording, handleStopRecording } = useTalkItOut(
     sessionId,
-    (text) => setContext((prev) => prev ? `${prev}\n\n${text}` : text),
+    (text) => setContext((prev: string) => (prev ? `${prev}\n\n${text}` : text)),
   );
 
   // Sync pre-fills whenever stepData["1"] updates (e.g. after prefill runs)
   useEffect(() => {
     const d = stepData["1"] || {};
-    if (d.school_name && !schoolName) setSchoolName(d.school_name);
     if (d.district && !district) setDistrict(d.district);
     if (d.state && !state) setState(d.state);
     if (selectedBands.length === 0) {
@@ -1129,7 +2141,7 @@ function SchoolContextQuestionnaire({ sessionId, stepData, onConfirm }: SchoolCo
     if (d.context && !context) setContext(d.context);
   }, [JSON.stringify(stepData["1"])]);
 
-  const anyPreFilled = !!(prefilled.school_name || prefilled.district || prefilled.state || (prefilled.grade_bands?.length || prefilled.grade_band));
+  const anyPreFilled = !!(prefilled.district || prefilled.state || (prefilled.grade_bands?.length || prefilled.grade_band));
 
   const goToScreen = (n: 1 | 2 | 3 | 4) => {
     setScreen(n);
@@ -1161,22 +2173,13 @@ function SchoolContextQuestionnaire({ sessionId, stepData, onConfirm }: SchoolCo
     setIsSaving(true);
     try {
       if (screen === 1) {
-        await saveToStepData({ school_name: schoolName });
+        await saveToStepData({ district, state });
         goToScreen(2);
       } else if (screen === 2) {
-        await saveToStepData({ district, state });
-        goToScreen(3);
-      } else if (screen === 3) {
         await saveToStepData({ grade_bands: selectedBands });
-        goToScreen(4);
+        goToScreen(3);
       } else {
-        await saveToStepData({
-          school_name: schoolName,
-          district,
-          state,
-          grade_bands: selectedBands,
-          context,
-        });
+        await saveToStepData({ district, state, grade_bands: selectedBands, context });
         onConfirm();
       }
     } catch {
@@ -1187,7 +2190,7 @@ function SchoolContextQuestionnaire({ sessionId, stepData, onConfirm }: SchoolCo
   };
 
   const goBack = () => {
-    if (screen > 1) goToScreen((screen - 1) as 1 | 2 | 3 | 4);
+    if (screen > 1) goToScreen((screen - 1) as 1 | 2 | 3);
   };
 
   // Global arrow-key navigation — skip when a textarea is focused (screen 4 write-it)
@@ -1199,7 +2202,7 @@ function SchoolContextQuestionnaire({ sessionId, stepData, onConfirm }: SchoolCo
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [screen, isSaving, schoolName, district, state, selectedBands, context]);
+  }, [screen, isSaving, district, state, selectedBands, context]);
 
   const handleContextDocUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -1220,15 +2223,15 @@ function SchoolContextQuestionnaire({ sessionId, stepData, onConfirm }: SchoolCo
     }
   };
 
-  // Screen 4 uses wider container for the 3-card grid
-  const containerWidth = screen === 4 ? "max-w-4xl" : "max-w-lg";
+  // Screen 3 uses wider container for the 3-card grid
+  const containerWidth = screen === 3 ? "max-w-4xl" : "max-w-lg";
 
   return (
     <div className="w-full h-full overflow-auto bg-background">
       <div className="flex flex-col items-center justify-center min-h-full px-8 py-16">
         <div className={cn("w-full space-y-8 transition-all duration-300", containerWidth)}>
 
-          {/* Pre-fill banner — shown on screen 1 only if any fields were pre-filled */}
+          {/* Pre-fill banner — shown on screen 1 if any fields were pre-filled */}
           {screen === 1 && anyPreFilled && (
             <div className="flex items-center gap-2 px-3 py-2.5 rounded-lg bg-primary/8 border border-primary/15 text-sm text-primary">
               <Sparkles className="w-4 h-4 shrink-0" />
@@ -1239,26 +2242,8 @@ function SchoolContextQuestionnaire({ sessionId, stepData, onConfirm }: SchoolCo
           {/* Animated screen content */}
           <div key={animKey} style={{ animation: "schoolFadeIn 0.25s ease forwards" }}>
 
-            {/* ── Screen 1: School Name ── */}
+            {/* ── Screen 1: State + District ── */}
             {screen === 1 && (
-              <div className="space-y-8">
-                <h1 className="text-4xl font-display font-bold text-foreground leading-tight">
-                  What's your school called?
-                </h1>
-                <Input
-                  autoFocus
-                  value={schoolName}
-                  onChange={(e) => setSchoolName(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter" && schoolName.trim()) goNext(); }}
-                  placeholder="e.g. Lincoln Park High School"
-                  className={cn("h-14 text-lg border-2 focus:border-primary", prefilled.school_name ? "bg-primary/5" : "")}
-                />
-                <p className="text-xs text-muted-foreground">Press Enter or the → key to continue</p>
-              </div>
-            )}
-
-            {/* ── Screen 2: State + District ── */}
-            {screen === 2 && (
               <div className="space-y-8">
                 <h1 className="text-4xl font-display font-bold text-foreground leading-tight">
                   Which state and district?
@@ -1289,8 +2274,8 @@ function SchoolContextQuestionnaire({ sessionId, stepData, onConfirm }: SchoolCo
               </div>
             )}
 
-            {/* ── Screen 3: Grade Band (multi-select) ── */}
-            {screen === 3 && (
+            {/* ── Screen 2: Grade Band (multi-select) ── */}
+            {screen === 2 && (
               <div className="space-y-8">
                 <div className="space-y-2">
                   <h1 className="text-4xl font-display font-bold text-foreground leading-tight">
@@ -1339,8 +2324,8 @@ function SchoolContextQuestionnaire({ sessionId, stepData, onConfirm }: SchoolCo
               </div>
             )}
 
-            {/* ── Screen 4: School Context (3-card layout) ── */}
-            {screen === 4 && (
+            {/* ── Screen 3: School Context (3-card layout) ── */}
+            {screen === 3 && (
               <div className="space-y-6">
                 <div className="space-y-1">
                   <h1 className="text-4xl font-display font-bold text-foreground leading-tight">
@@ -1529,195 +2514,113 @@ const PRACTICES_CONTEXT_QUESTIONS = [
 interface ContextCaptureCardsProps {
   contextText: string;
   setContextText: React.Dispatch<React.SetStateAction<string>>;
-  contextDocs: { name: string }[];
+  /** @deprecated No longer used — upload removed from context pages */
+  contextDocs?: { name: string }[];
   questions: string[];
-  inputId: string;
+  /** @deprecated No longer used */
+  inputId?: string;
   recordingState: RecordingState;
   onStartRecording: () => void;
   onStopRecording: () => void;
-  isUploadingDoc: boolean;
-  onFileChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  /** @deprecated No longer used */
+  isUploadingDoc?: boolean;
+  /** @deprecated No longer used */
+  onFileChange?: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  /** Optional selected items to show as a compact reference above the textarea */
+  selectedItems?: TaxonomySelection[];
 }
 
-function ContextCaptureCards({
-  contextText, setContextText, contextDocs, questions, inputId,
-  recordingState, onStartRecording, onStopRecording, isUploadingDoc, onFileChange,
-}: ContextCaptureCardsProps) {
-  const [isFullscreen, setIsFullscreen] = useState(false);
+const TIER_CHIP: Record<string, { label: string; cls: string }> = {
+  most_important: { label: "Top Priority", cls: "bg-primary/10 text-primary border-primary/20" },
+  important:      { label: "Important",    cls: "bg-amber-50 text-amber-700 border-amber-200" },
+  nice_to_have:   { label: "Nice to Have", cls: "bg-muted text-muted-foreground border-border" },
+};
 
-  const promptQuestionsBlock = (
-    <div className="rounded-xl border border-border bg-muted/30 px-4 py-3">
-      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Consider addressing:</p>
-      <ul className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-1.5">
-        {questions.map((q) => (
-          <li key={q} className="flex items-start gap-2 text-sm text-foreground/80 leading-snug">
-            <span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-primary/50 shrink-0" />
-            {q}
-          </li>
-        ))}
-      </ul>
+function ContextCaptureCards({
+  contextText, setContextText, questions,
+  recordingState, onStartRecording, onStopRecording,
+  selectedItems,
+}: ContextCaptureCardsProps) {
+  const compactItemsBlock = selectedItems && selectedItems.length > 0 ? (
+    <div className="rounded-xl border border-border bg-muted/20 px-4 py-3">
+      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2.5">Your selections</p>
+      <div className="grid grid-cols-2 gap-x-6 gap-y-1.5">
+        {selectedItems.map((sel) => {
+          const chip = TIER_CHIP[sel.importance] ?? TIER_CHIP.nice_to_have;
+          return (
+            <div key={sel.id} className="flex items-center gap-2 min-w-0">
+              <span className="text-xs text-foreground font-medium truncate flex-1">{sel.name}</span>
+              <span className={cn("shrink-0 text-[9px] font-semibold px-1.5 py-0.5 rounded-full border whitespace-nowrap", chip.cls)}>
+                {chip.label}
+              </span>
+            </div>
+          );
+        })}
+      </div>
     </div>
-  );
+  ) : null;
 
   return (
     <div className="space-y-4">
+      {compactItemsBlock}
+
       {/* Prompt questions */}
-      {promptQuestionsBlock}
+      <div className="rounded-xl border border-border bg-muted/30 px-4 py-3">
+        <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Consider addressing:</p>
+        <ul className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-1.5">
+          {questions.map((q) => (
+            <li key={q} className="flex items-start gap-2 text-sm text-foreground/80 leading-snug">
+              <span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-primary/50 shrink-0" />
+              {q}
+            </li>
+          ))}
+        </ul>
+      </div>
 
-      {/* Fullscreen dialog */}
-      <Dialog open={isFullscreen} onOpenChange={setIsFullscreen}>
-        <DialogContent className="max-w-4xl w-full h-[85vh] flex flex-col p-0 gap-0">
-          <DialogHeader className="px-6 pt-6 pb-4 border-b shrink-0">
-            <div className="flex items-center justify-between">
-              <DialogTitle className="text-base font-semibold flex items-center gap-2">
-                <svg className="w-4 h-4 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536M9 13l6.586-6.586a2 2 0 112.828 2.828L11.828 15.828a4 4 0 01-1.414.828l-3.414.828.828-3.414a4 4 0 01.828-1.414z" />
-                </svg>
-                Write it
-              </DialogTitle>
-              <Button variant="ghost" size="sm" className="gap-1.5 text-xs" onClick={() => setIsFullscreen(false)}>
-                <Minimize2 className="w-3.5 h-3.5" /> Exit fullscreen
-              </Button>
-            </div>
-          </DialogHeader>
-          <div className="flex flex-col flex-1 overflow-hidden px-6 py-4 gap-4 min-h-0">
-            <div className="rounded-lg border border-border bg-muted/30 px-4 py-3 shrink-0">
-              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Consider addressing:</p>
-              <ul className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-1.5">
-                {questions.map((q) => (
-                  <li key={q} className="flex items-start gap-2 text-sm text-foreground/80 leading-snug">
-                    <span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-primary/50 shrink-0" />
-                    {q}
-                  </li>
-                ))}
-              </ul>
-            </div>
-            <Textarea
-              autoFocus
-              value={contextText}
-              onChange={(e) => setContextText(e.target.value)}
-              placeholder="Share your thinking here..."
-              className="text-sm flex-1 resize-none min-h-0"
-            />
-          </div>
-        </DialogContent>
-      </Dialog>
-
-      {/* 3 cards */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 items-start">
-        {/* Write it */}
-        <div className="rounded-xl border border-border bg-card flex flex-col min-h-[300px]">
-          <div className="flex items-center gap-2 px-4 pt-4 pb-3 border-b border-border">
-            <div className="w-7 h-7 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
-              <svg className="w-4 h-4 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536M9 13l6.586-6.586a2 2 0 112.828 2.828L11.828 15.828a4 4 0 01-1.414.828l-3.414.828.828-3.414a4 4 0 01.828-1.414z" />
-              </svg>
-            </div>
-            <div className="flex-1">
-              <p className="text-sm font-semibold text-foreground">Write it</p>
-              <p className="text-xs text-muted-foreground">Type your context below</p>
-            </div>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-7 w-7 shrink-0"
-              title="Expand to fullscreen"
-              onClick={() => setIsFullscreen(true)}
+      {/* Write area + inline Talk it out */}
+      <div className="rounded-xl border border-border bg-card overflow-hidden">
+        <Textarea
+          value={contextText}
+          onChange={(e) => setContextText(e.target.value)}
+          placeholder="Share your thinking here..."
+          className="text-sm resize-none min-h-[180px] border-0 focus-visible:ring-0 rounded-none shadow-none"
+        />
+        <div className="border-t border-border px-4 py-2.5 flex items-center gap-3 bg-muted/20">
+          {recordingState === "idle" && (
+            <button
+              type="button"
+              onClick={onStartRecording}
+              className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors group"
             >
-              <Maximize2 className="w-3.5 h-3.5 text-muted-foreground" />
-            </Button>
-          </div>
-          <div className="p-4 flex-1 flex flex-col">
-            <Textarea
-              value={contextText}
-              onChange={(e) => setContextText(e.target.value)}
-              placeholder="Share your thinking here..."
-              className="text-sm flex-1 resize-none min-h-[200px]"
-            />
-          </div>
-        </div>
-        {/* Talk it out */}
-        <div className="rounded-xl border border-border bg-card flex flex-col min-h-[300px]">
-          <div className="flex items-center gap-2 px-4 pt-4 pb-3 border-b border-border">
-            <div className="w-7 h-7 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
-              <MessageSquare className="w-4 h-4 text-primary" />
-            </div>
-            <div>
-              <p className="text-sm font-semibold text-foreground">Talk it out</p>
-              <p className="text-xs text-muted-foreground">Record and we'll transcribe it</p>
-            </div>
-          </div>
-          <div className="p-4 flex-1 flex flex-col">
-            <div className="flex-1 flex flex-col items-center justify-center gap-4 py-4">
-              {recordingState === "idle" && (
-                <button type="button" onClick={onStartRecording}
-                  className="w-16 h-16 rounded-full bg-red-50 border-2 border-red-200 flex items-center justify-center hover:bg-red-100 hover:border-red-300 transition-colors group">
-                  <div className="w-5 h-5 rounded-full bg-red-500 group-hover:scale-110 transition-transform" />
-                </button>
-              )}
-              {recordingState === "recording" && (
-                <button type="button" onClick={onStopRecording}
-                  className="w-16 h-16 rounded-full bg-red-100 border-2 border-red-400 flex items-center justify-center hover:bg-red-200 transition-colors">
-                  <div className="w-5 h-5 rounded-md bg-red-600" />
-                </button>
-              )}
-              {recordingState === "transcribing" && (
-                <div className="w-16 h-16 rounded-full bg-primary/10 border-2 border-primary/20 flex items-center justify-center">
-                  <Loader2 className="w-6 h-6 text-primary animate-spin" />
-                </div>
-              )}
-              {recordingState === "idle" && <p className="text-xs text-muted-foreground text-center">Tap to start recording</p>}
-              {recordingState === "recording" && (
-                <div className="flex flex-col items-center gap-2">
-                  <div className="flex items-center gap-1">
-                    {[...Array(7)].map((_, i) => (
-                      <div key={i} className="w-1 bg-red-400 rounded-full animate-pulse" style={{ height: `${10 + (i % 4) * 5}px`, animationDelay: `${i * 80}ms` }} />
-                    ))}
-                  </div>
-                  <p className="text-xs text-red-600 font-medium">Recording... tap to stop</p>
-                </div>
-              )}
-              {recordingState === "transcribing" && <p className="text-xs text-muted-foreground">Transcribing your recording...</p>}
-            </div>
-          </div>
-        </div>
-        {/* Upload docs */}
-        <div className="rounded-xl border border-border bg-card flex flex-col min-h-[300px]">
-          <div className="flex items-center gap-2 px-4 pt-4 pb-3 border-b border-border">
-            <div className="w-7 h-7 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
-              <CloudUpload className="w-4 h-4 text-primary" />
-            </div>
-            <div>
-              <p className="text-sm font-semibold text-foreground">Upload docs</p>
-              <p className="text-xs text-muted-foreground">PDF, Word, or text files</p>
-            </div>
-          </div>
-          <div className="p-4 flex-1 flex flex-col gap-3">
-            <input id={inputId} type="file" accept=".pdf,.doc,.docx,.txt" className="hidden" onChange={onFileChange} />
-            <label
-              htmlFor={inputId}
-              className={cn(
-                "flex-1 flex flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed border-border hover:border-primary/40 hover:bg-primary/5 transition-colors py-8 cursor-pointer",
-                isUploadingDoc && "opacity-50 pointer-events-none",
-              )}
+              <div className="w-6 h-6 rounded-full bg-red-50 border border-red-200 flex items-center justify-center group-hover:border-red-300 group-hover:bg-red-100 transition-colors">
+                <div className="w-2.5 h-2.5 rounded-full bg-red-500" />
+              </div>
+              <span>Talk it out</span>
+            </button>
+          )}
+          {recordingState === "recording" && (
+            <button
+              type="button"
+              onClick={onStopRecording}
+              className="flex items-center gap-2 text-sm text-red-600 font-medium"
             >
-              {isUploadingDoc ? (
-                <><Loader2 className="w-7 h-7 text-primary animate-spin" /><p className="text-xs text-muted-foreground">Extracting content...</p></>
-              ) : (
-                <><CloudUpload className="w-7 h-7 text-muted-foreground/50" /><p className="text-xs text-muted-foreground text-center">Click to upload a document</p></>
-              )}
-            </label>
-            {contextDocs.length > 0 && (
-              <ul className="space-y-1">
-                {contextDocs.map((d, i) => (
-                  <li key={i} className="flex items-center gap-2 text-xs text-muted-foreground">
-                    <Check className="w-3.5 h-3.5 text-green-500 shrink-0" />
-                    <span className="truncate">{d.name}</span>
-                  </li>
+              <div className="w-6 h-6 rounded-full bg-red-100 border border-red-400 flex items-center justify-center animate-pulse">
+                <div className="w-2.5 h-2.5 rounded-sm bg-red-600" />
+              </div>
+              <span>Recording — tap to stop</span>
+              <div className="flex items-center gap-0.5 ml-1">
+                {[...Array(5)].map((_, i) => (
+                  <div key={i} className="w-0.5 bg-red-400 rounded-full animate-pulse" style={{ height: `${8 + (i % 3) * 4}px`, animationDelay: `${i * 100}ms` }} />
                 ))}
-              </ul>
-            )}
-          </div>
+              </div>
+            </button>
+          )}
+          {recordingState === "transcribing" && (
+            <span className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="w-4 h-4 animate-spin text-primary" />
+              Transcribing your recording...
+            </span>
+          )}
         </div>
       </div>
     </div>
@@ -1728,19 +2631,28 @@ interface AimsForLearnersQuestionnaireProps {
   sessionId: string;
   stepData: Record<string, any>;
   onConfirm: () => void;
+  /** "outcomes" = 3-screen outcomes-only; "leaps" = 3-screen leaps-only; "full" = original 6-screen (default). */
+  mode?: "full" | "outcomes" | "leaps";
 }
 
-function AimsForLearnersQuestionnaire({ sessionId, stepData, onConfirm }: AimsForLearnersQuestionnaireProps) {
+function AimsForLearnersQuestionnaire({ sessionId, stepData, onConfirm, mode = "full" }: AimsForLearnersQuestionnaireProps) {
   const { data: taxonomyItems = [], isLoading } = useTaxonomyItems(2);
   const qc = useQueryClient();
   const { toast } = useToast();
 
-  // 6 sub-screens: Select Outcomes → Prioritize Outcomes → Outcomes Context →
-  //                Select LEAPs   → Prioritize LEAPs   → LEAPs Context
   const [screen, setScreen] = useState<1 | 2 | 3 | 4 | 5 | 6>(1);
   const [isSaving, setIsSaving] = useState(false);
 
   const currentData = stepData["2"] || {};
+
+  // v2: When the user is in Path B (specific experience), use the experience
+  // name in headings/copy where applicable so the questions feel scoped.
+  const isPathB = stepData.designScope === "specific_experience";
+  const rawExpNameLocal = (stepData.experience as Record<string, any>)?.name;
+  const experienceName: string | null =
+    typeof rawExpNameLocal === "string" && rawExpNameLocal.trim() !== "" ? rawExpNameLocal.trim() : null;
+  /** Path B copy fallback when experience name omitted */
+  const pathBScopeLabel = experienceName ?? "this learning experience";
 
   // Track initially-prefilled ids so we can show "Pre-filled" badges
   const initialPrefilled = useRef<{ outcomes: Set<number>; leaps: Set<number> }>({
@@ -1859,7 +2771,12 @@ function AimsForLearnersQuestionnaire({ sessionId, stepData, onConfirm }: AimsFo
     if (tier === "most_important") {
       const topCount = selectedOutcomes.filter((s) => s.importance === "most_important" && s.id !== id).length;
       if (topCount >= MAX_TOP_PRIORITIES) {
-        toast({ title: "Limit reached", description: `Max ${MAX_TOP_PRIORITIES} top priorities.` });
+        toast({
+          title: "Limit reached",
+          description: isPathB
+            ? `Max ${MAX_TOP_PRIORITIES} outcomes in highest priority.`
+            : `Max ${MAX_TOP_PRIORITIES} top priorities.`,
+        });
         return;
       }
     }
@@ -1885,7 +2802,12 @@ function AimsForLearnersQuestionnaire({ sessionId, stepData, onConfirm }: AimsFo
     if (tier === "most_important") {
       const topCount = selectedLeaps.filter((s) => s.importance === "most_important" && s.id !== id).length;
       if (topCount >= MAX_TOP_PRIORITIES) {
-        toast({ title: "Limit reached", description: `Max ${MAX_TOP_PRIORITIES} top priorities.` });
+        toast({
+          title: "Limit reached",
+          description: isPathB
+            ? `Max ${MAX_TOP_PRIORITIES} LEAPs in highest priority.`
+            : `Max ${MAX_TOP_PRIORITIES} top priorities.`,
+        });
         return;
       }
     }
@@ -1913,19 +2835,25 @@ function AimsForLearnersQuestionnaire({ sessionId, stepData, onConfirm }: AimsFo
     if (isSaving) return;
     setIsSaving(true);
     try {
-      if (screen === 1) { await saveToStepData({ selected_outcomes: selectedOutcomes }); setScreen(2); }
-      else if (screen === 2) { await saveToStepData({ selected_outcomes: selectedOutcomes }); setScreen(3); }
-      else if (screen === 3) { await saveToStepData({ outcomes_summary: outcomesContext }); setScreen(4); }
-      else if (screen === 4) { await saveToStepData({ selected_leaps: selectedLeaps }); setScreen(5); }
-      else if (screen === 5) { await saveToStepData({ selected_leaps: selectedLeaps }); setScreen(6); }
-      else {
-        await saveToStepData({
-          selected_outcomes: selectedOutcomes,
-          selected_leaps: selectedLeaps,
-          outcomes_summary: outcomesContext,
-          leaps_summary: leapsContext,
-        });
-        onConfirm();
+      if (mode === "outcomes") {
+        if (screen === 1) { await saveToStepData({ selected_outcomes: selectedOutcomes }); setScreen(2); }
+        else if (screen === 2) { await saveToStepData({ selected_outcomes: selectedOutcomes }); setScreen(3); }
+        else { await saveToStepData({ outcomes_summary: outcomesContext }); onConfirm(); }
+      } else if (mode === "leaps") {
+        if (screen === 1) { await saveToStepData({ selected_leaps: selectedLeaps }); setScreen(2); }
+        else if (screen === 2) { await saveToStepData({ selected_leaps: selectedLeaps }); setScreen(3); }
+        else { await saveToStepData({ leaps_summary: leapsContext }); onConfirm(); }
+      } else {
+        // full: original 6-screen behavior
+        if (screen === 1) { await saveToStepData({ selected_outcomes: selectedOutcomes }); setScreen(2); }
+        else if (screen === 2) { await saveToStepData({ selected_outcomes: selectedOutcomes }); setScreen(3); }
+        else if (screen === 3) { await saveToStepData({ outcomes_summary: outcomesContext }); setScreen(4); }
+        else if (screen === 4) { await saveToStepData({ selected_leaps: selectedLeaps }); setScreen(5); }
+        else if (screen === 5) { await saveToStepData({ selected_leaps: selectedLeaps }); setScreen(6); }
+        else {
+          await saveToStepData({ selected_outcomes: selectedOutcomes, selected_leaps: selectedLeaps, outcomes_summary: outcomesContext, leaps_summary: leapsContext });
+          onConfirm();
+        }
       }
     } catch {
       toast({ title: "Save failed", description: "Please try again.", variant: "destructive" });
@@ -1951,10 +2879,11 @@ function AimsForLearnersQuestionnaire({ sessionId, stepData, onConfirm }: AimsFo
 
   // ── Sub-step indicator ─────────────────────────────────────────────────────
 
-  const subStepLabels = [
-    "Select Outcomes", "Prioritize Outcomes", "Outcomes Context",
-    "Select LEAPs", "Prioritize LEAPs", "LEAPs Context",
-  ];
+  const subStepLabels = mode === "outcomes"
+    ? ["Select Outcomes", "Prioritize", "Context"]
+    : mode === "leaps"
+      ? ["Select LEAPs", "Prioritize", "Context"]
+      : ["Select Outcomes", "Prioritize Outcomes", "Outcomes Context", "Select LEAPs", "Prioritize LEAPs", "LEAPs Context"];
 
   const SubStepIndicator = (
     <div className="flex items-center gap-1 flex-wrap">
@@ -2055,7 +2984,7 @@ function AimsForLearnersQuestionnaire({ sessionId, stepData, onConfirm }: AimsFo
     };
     const tiers = ["most_important", "important", "nice_to_have"] as const;
     const tierLabel: Record<string, string> = {
-      most_important: "Top Priority",
+      most_important: isPathB ? "Highest priority" : "Top Priority",
       important: "Important",
       nice_to_have: "Nice to Have",
     };
@@ -2202,8 +3131,9 @@ function AimsForLearnersQuestionnaire({ sessionId, stepData, onConfirm }: AimsFo
     setTier: (id: number, tier: TaxonomySelection["importance"]) => void,
     move: (id: number, dir: "up" | "down") => void,
   ) => {
+    const topTierLabel = isPathB ? "Highest priority" : "Top Priority";
     const TIER_SECTIONS = [
-      { key: "most_important" as const, label: "Top Priority", note: `max ${MAX_TOP_PRIORITIES}`, headerCls: "bg-primary/5 border-primary/15", labelCls: "text-primary" },
+      { key: "most_important" as const, label: topTierLabel, note: `max ${MAX_TOP_PRIORITIES}`, headerCls: "bg-primary/5 border-primary/15", labelCls: "text-primary" },
       { key: "important" as const,      label: "Important",    note: null,                        headerCls: "bg-amber-50 border-amber-200",   labelCls: "text-amber-700" },
       { key: "nice_to_have" as const,   label: "Nice to Have", note: null,                        headerCls: "bg-muted/30 border-border",       labelCls: "text-muted-foreground" },
     ];
@@ -2261,114 +3191,101 @@ function AimsForLearnersQuestionnaire({ sessionId, stepData, onConfirm }: AimsFo
 
           {SubStepIndicator}
 
-          {/* Screen 1: Select Outcomes */}
-          {screen === 1 && renderSelectScreen(
+          {/* ── Outcomes screens (mode: "outcomes" | "full") ─── */}
+          {mode !== "leaps" && screen === 1 && renderSelectScreen(
             "outcomes",
-            "Select your target outcomes",
-            "Review the outcomes identified from your documents, remove any that don't apply, and add any you're missing.",
-            selectedOutcomes,
-            outcomes,
-            initialPrefilled.current.outcomes,
+            isPathB ? `What are the target outcomes for ${pathBScopeLabel}?` : "Select your target outcomes",
+            isPathB
+              ? `Choose and refine the outcomes that define success for ${pathBScopeLabel}. Use your documents as a starting point—add or remove items so the list reflects this experience.`
+              : "Review the outcomes identified from your documents, remove any that don't apply, and add any you're missing.",
+            selectedOutcomes, outcomes, initialPrefilled.current.outcomes,
             (item) => {
               userHasEdited.current = true;
               const existing = selectedOutcomes.find((s) => s.id === item.id);
               if (existing) {
                 const next = selectedOutcomes.filter((s) => s.id !== item.id);
-                setSelectedOutcomes(next);
-                saveToStepData({ selected_outcomes: next });
+                setSelectedOutcomes(next); saveToStepData({ selected_outcomes: next });
               } else {
                 const next = sortByTier([...selectedOutcomes, { id: item.id, name: item.name, importance: "important" as const }]);
-                setSelectedOutcomes(next);
-                saveToStepData({ selected_outcomes: next });
+                setSelectedOutcomes(next); saveToStepData({ selected_outcomes: next });
               }
             },
           )}
 
-          {/* Screen 2: Prioritize Outcomes */}
-          {screen === 2 && renderPrioritizeScreen(
-            "Prioritize your outcomes",
-            "Assign a priority tier to each outcome. Use the arrows to reorder within a tier. Max 2 Top Priority.",
-            selectedOutcomes,
-            setOutcomeTier,
-            moveOutcome,
+          {mode !== "leaps" && screen === 2 && renderPrioritizeScreen(
+            isPathB ? `Prioritize outcomes for ${pathBScopeLabel}` : "Prioritize your outcomes",
+            isPathB ? `Assign each outcome a tier for ${pathBScopeLabel}. Use the arrows to reorder within a tier. Max ${MAX_TOP_PRIORITIES} highest priority.` : "Assign a priority tier to each outcome. Use the arrows to reorder within a tier. Max 2 Top Priority.",
+            selectedOutcomes, setOutcomeTier, moveOutcome,
           )}
 
-          {/* Screen 3: Outcomes Context */}
-          {screen === 3 && (
+          {mode !== "leaps" && screen === 3 && (
             <div className="space-y-6">
               <div>
-                <h1 className="text-3xl font-display font-bold text-foreground leading-tight">Anything else about your outcomes?</h1>
+                <h1 className="text-3xl font-display font-bold text-foreground leading-tight">
+                  {isPathB ? `Anything else about the outcomes for ${pathBScopeLabel}?` : "Anything else about your outcomes?"}
+                </h1>
                 <p className="text-muted-foreground text-base mt-1.5 leading-relaxed">
-                  Share any context that helps us understand why these outcomes matter for the experience you're designing.
+                  {isPathB ? `Share any context that helps us understand why these outcomes matter for ${pathBScopeLabel}.` : "Share any context that helps us understand why these outcomes matter for the experience you're designing."}
                 </p>
               </div>
               <ContextCaptureCards
-                contextText={outcomesContext}
-                setContextText={setOutcomesContext}
-                contextDocs={outcomesContextDocs}
-                questions={OUTCOMES_CONTEXT_QUESTIONS}
-                inputId="aims-outcomes-doc-upload"
-                recordingState={recordingState}
-                onStartRecording={() => handleStartRecording("outcomes")}
-                onStopRecording={handleStopRecording}
-                isUploadingDoc={isUploadingDoc}
-                onFileChange={(e) => handleContextDocUpload(e, "outcomes")}
+                contextText={outcomesContext} setContextText={setOutcomesContext}
+                contextDocs={outcomesContextDocs} questions={OUTCOMES_CONTEXT_QUESTIONS}
+                inputId="aims-outcomes-doc-upload" recordingState={recordingState}
+                onStartRecording={() => handleStartRecording("outcomes")} onStopRecording={handleStopRecording}
+                isUploadingDoc={isUploadingDoc} onFileChange={(e) => handleContextDocUpload(e, "outcomes")}
+                selectedItems={selectedOutcomes}
               />
             </div>
           )}
 
-          {/* Screen 4: Select LEAPs */}
-          {screen === 4 && renderSelectScreen(
+          {/* ── LEAPs screens (mode: "leaps" uses screens 1-3; "full" uses 4-6) ── */}
+          {/* Select LEAPs */}
+          {((mode === "leaps" && screen === 1) || (mode === "full" && screen === 4)) && renderSelectScreen(
             "leaps",
-            "Select your LEAPs",
-            "Review the LEAPs identified from your documents, remove any that don't apply, and add any you're missing.",
-            selectedLeaps,
-            leaps,
-            initialPrefilled.current.leaps,
+            isPathB ? `What are the targeted LEAPs for ${pathBScopeLabel}?` : "Select your LEAPs",
+            isPathB
+              ? `Choose the learning principles and design moves that best fit ${pathBScopeLabel}. Use your documents as a starting point—add or remove items below.`
+              : "Review the LEAPs identified from your documents, remove any that don't apply, and add any you're missing.",
+            selectedLeaps, leaps, initialPrefilled.current.leaps,
             (item) => {
               userHasEdited.current = true;
               const existing = selectedLeaps.find((s) => s.id === item.id);
               if (existing) {
                 const next = selectedLeaps.filter((s) => s.id !== item.id);
-                setSelectedLeaps(next);
-                saveToStepData({ selected_leaps: next });
+                setSelectedLeaps(next); saveToStepData({ selected_leaps: next });
               } else {
                 const next = sortByTier([...selectedLeaps, { id: item.id, name: item.name, importance: "important" as const }]);
-                setSelectedLeaps(next);
-                saveToStepData({ selected_leaps: next });
+                setSelectedLeaps(next); saveToStepData({ selected_leaps: next });
               }
             },
           )}
 
-          {/* Screen 5: Prioritize LEAPs */}
-          {screen === 5 && renderPrioritizeScreen(
-            "Prioritize your LEAPs",
-            "Assign a priority tier to each LEAP. Use the arrows to reorder within a tier. Max 2 Top Priority.",
-            selectedLeaps,
-            setLeapTier,
-            moveLeap,
+          {/* Prioritize LEAPs */}
+          {((mode === "leaps" && screen === 2) || (mode === "full" && screen === 5)) && renderPrioritizeScreen(
+            isPathB ? `Prioritize LEAPs for ${pathBScopeLabel}` : "Prioritize your LEAPs",
+            isPathB ? `Assign each LEAP a tier for ${pathBScopeLabel}. Use the arrows to reorder within a tier. Max ${MAX_TOP_PRIORITIES} highest priority.` : "Assign a priority tier to each LEAP. Use the arrows to reorder within a tier. Max 2 Top Priority.",
+            selectedLeaps, setLeapTier, moveLeap,
           )}
 
-          {/* Screen 6: LEAPs Context */}
-          {screen === 6 && (
+          {/* LEAPs Context */}
+          {((mode === "leaps" && screen === 3) || (mode === "full" && screen === 6)) && (
             <div className="space-y-6">
               <div>
-                <h1 className="text-3xl font-display font-bold text-foreground leading-tight">Anything else about your LEAPs?</h1>
+                <h1 className="text-3xl font-display font-bold text-foreground leading-tight">
+                  {isPathB ? `Anything else about the LEAPs for ${pathBScopeLabel}?` : "Anything else about your LEAPs?"}
+                </h1>
                 <p className="text-muted-foreground text-base mt-1.5 leading-relaxed">
-                  Share additional context about the learning experience and culture you're trying to create.
+                  {isPathB ? `Share additional context about the culture and learner experience you're designing for ${pathBScopeLabel}.` : "Share additional context about the learning experience and culture you're trying to create."}
                 </p>
               </div>
               <ContextCaptureCards
-                contextText={leapsContext}
-                setContextText={setLeapsContext}
-                contextDocs={leapsContextDocs}
-                questions={LEAPS_CONTEXT_QUESTIONS}
-                inputId="aims-leaps-doc-upload"
-                recordingState={recordingState}
-                onStartRecording={() => handleStartRecording("leaps")}
-                onStopRecording={handleStopRecording}
-                isUploadingDoc={isUploadingDoc}
-                onFileChange={(e) => handleContextDocUpload(e, "leaps")}
+                contextText={leapsContext} setContextText={setLeapsContext}
+                contextDocs={leapsContextDocs} questions={LEAPS_CONTEXT_QUESTIONS}
+                inputId="aims-leaps-doc-upload" recordingState={recordingState}
+                onStartRecording={() => handleStartRecording("leaps")} onStopRecording={handleStopRecording}
+                isUploadingDoc={isUploadingDoc} onFileChange={(e) => handleContextDocUpload(e, "leaps")}
+                selectedItems={selectedLeaps}
               />
             </div>
           )}
@@ -2395,19 +3312,54 @@ function AimsForLearnersQuestionnaire({ sessionId, stepData, onConfirm }: AimsFo
 // Step 3 — Practices & Experiences Questionnaire
 // ---------------------------------------------------------------------------
 
+export type PracticesQuestionnaireHandle = {
+  advance: () => Promise<void>;
+  retreat: () => void;
+};
+
 interface PracticesQuestionnaireProps {
   sessionId: string;
   stepData: Record<string, any>;
   onConfirm: () => void;
+  /** Embedded in Path B Define Experience — select additional practices then prioritize (no Practices context screen). */
+  variant?: "default" | "pathBExperienceAddition";
+  onEmbeddedBack?: () => void;
+  /** When set with embed variant, exclude these from additional selection and tier editing (shown as fixed “highest priority”). */
+  pathBPrimaryPracticeIds?: number[];
+  pathBHideSubStepIndicator?: boolean;
+  pathBHideFloatingNav?: boolean;
+  /** Parent-driven sub-step inside Define Experience (1 = additional, 2 = prioritize). */
+  pathBControlledStep?: 1 | 2;
+  onPathBControlledStepChange?: (step: 1 | 2) => void;
 }
 
-function PracticesQuestionnaire({ sessionId, stepData, onConfirm }: PracticesQuestionnaireProps) {
+const PracticesQuestionnaire = forwardRef<PracticesQuestionnaireHandle, PracticesQuestionnaireProps>(function PracticesQuestionnaire({
+  sessionId,
+  stepData,
+  onConfirm,
+  variant = "default",
+  onEmbeddedBack,
+  pathBPrimaryPracticeIds,
+  pathBHideSubStepIndicator = false,
+  pathBHideFloatingNav = false,
+  pathBControlledStep,
+  onPathBControlledStepChange,
+}, ref) {
   const { data: taxonomyItemsRaw = [], isLoading } = useTaxonomyItems(3);
   const qc = useQueryClient();
   const { toast } = useToast();
+  const embedPathB = variant === "pathBExperienceAddition";
+  const primaryIdSet = useMemo(
+    () => new Set(pathBPrimaryPracticeIds ?? []),
+    [pathBPrimaryPracticeIds],
+  );
+  const pathBPartitionPractices = embedPathB && primaryIdSet.size > 0;
+  const isControlledEmbed =
+    embedPathB && pathBControlledStep != null && onPathBControlledStepChange != null;
 
-  // 3 sub-screens: Select → Prioritize → Context
-  const [screen, setScreen] = useState<1 | 2 | 3>(1);
+  // 3 sub-screens normally: Select → Prioritize → Context. Path-B embed skips Context.
+  const [internalScreen, setInternalScreen] = useState<1 | 2 | 3>(1);
+  const screen = isControlledEmbed ? pathBControlledStep! : internalScreen;
   const [isSaving, setIsSaving] = useState(false);
 
   const currentData = stepData["3"] || {};
@@ -2518,10 +3470,21 @@ function PracticesQuestionnaire({ sessionId, stepData, onConfirm }: PracticesQue
   // ── Prioritization helpers ─────────────────────────────────────────────────
 
   const setPracticeTier = (id: number, tier: TaxonomySelection["importance"]) => {
+    if (primaryIdSet.has(id)) return;
     if (tier === "most_important") {
-      const topCount = selectedPractices.filter((s) => s.importance === "most_important" && s.id !== id).length;
+      const topCount = selectedPractices.filter(
+        (s) =>
+          s.importance === "most_important"
+          && s.id !== id
+          && (!pathBPartitionPractices || !primaryIdSet.has(s.id)),
+      ).length;
       if (topCount >= MAX_TOP_PRIORITIES) {
-        toast({ title: "Limit reached", description: `Max ${MAX_TOP_PRIORITIES} top priorities.` });
+        toast({
+          title: "Limit reached",
+          description: embedPathB
+            ? `You can mark at most ${MAX_TOP_PRIORITIES} additional practices as highest priority (your primary practices are already fixed).`
+            : `Max ${MAX_TOP_PRIORITIES} top priorities.`,
+        });
         return;
       }
     }
@@ -2532,6 +3495,7 @@ function PracticesQuestionnaire({ sessionId, stepData, onConfirm }: PracticesQue
   };
 
   const movePractice = (id: number, dir: "up" | "down") => {
+    if (primaryIdSet.has(id)) return;
     const arr = [...selectedPractices];
     const idx = arr.findIndex((s) => s.id === id);
     if (idx < 0) return;
@@ -2547,9 +3511,21 @@ function PracticesQuestionnaire({ sessionId, stepData, onConfirm }: PracticesQue
     if (isSaving) return;
     setIsSaving(true);
     try {
-      if (screen === 1) { await saveToStepData({ selected_practices: selectedPractices }); setScreen(2); }
-      else if (screen === 2) { await saveToStepData({ selected_practices: selectedPractices }); setScreen(3); }
-      else {
+      if (screen === 1) {
+        await saveToStepData({ selected_practices: selectedPractices });
+        if (isControlledEmbed) {
+          onPathBControlledStepChange!(2);
+        } else {
+          setInternalScreen(2);
+        }
+      } else if (screen === 2) {
+        await saveToStepData({ selected_practices: selectedPractices });
+        if (embedPathB) {
+          onConfirm();
+        } else {
+          setInternalScreen(3);
+        }
+      } else {
         await saveToStepData({ selected_practices: selectedPractices, practices_summary: practicesContext });
         onConfirm();
       }
@@ -2561,11 +3537,29 @@ function PracticesQuestionnaire({ sessionId, stepData, onConfirm }: PracticesQue
   };
 
   const goBack = () => {
-    if (screen > 1) setScreen((screen - 1) as 1 | 2 | 3);
+    if (embedPathB && screen === 1 && onEmbeddedBack) {
+      onEmbeddedBack();
+      return;
+    }
+    if (screen > 1) {
+      if (isControlledEmbed && screen === 2) {
+        onPathBControlledStepChange!(1);
+        return;
+      }
+      setInternalScreen((s) => (s - 1) as 1 | 2 | 3);
+    }
   };
+
+  const navHandlersRef = useRef({ goNext, goBack });
+  navHandlersRef.current = { goNext, goBack };
+  useImperativeHandle(ref, () => ({
+    advance: () => navHandlersRef.current.goNext(),
+    retreat: () => navHandlersRef.current.goBack(),
+  }), []);
 
   // Global arrow-key navigation — skip when a textarea is focused
   useEffect(() => {
+    if (pathBHideFloatingNav) return;
     const handler = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLTextAreaElement) return;
       if (e.key === "ArrowRight") { e.preventDefault(); goNext(); }
@@ -2573,13 +3567,15 @@ function PracticesQuestionnaire({ sessionId, stepData, onConfirm }: PracticesQue
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [screen, isSaving, selectedPractices, practicesContext]);
+  }, [screen, isSaving, selectedPractices, practicesContext, embedPathB, pathBHideFloatingNav]);
 
   // ── Sub-step indicator ─────────────────────────────────────────────────────
 
-  const practicesSubStepLabels = ["Select Practices", "Prioritize Practices", "Practices Context"];
+  const practicesSubStepLabels = embedPathB
+    ? ["Additional practices", "Prioritize practices"]
+    : ["Select Practices", "Prioritize Practices", "Practices Context"];
 
-  const PracticesSubStepIndicator = (
+  const PracticesSubStepIndicator = !pathBHideSubStepIndicator ? (
     <div className="flex items-center gap-1 flex-wrap">
       {practicesSubStepLabels.map((label, i) => {
         const num = (i + 1) as 1 | 2 | 3;
@@ -2589,7 +3585,10 @@ function PracticesQuestionnaire({ sessionId, stepData, onConfirm }: PracticesQue
           <div key={label} className="flex items-center">
             <button
               type="button"
-              onClick={() => setScreen(num)}
+              onClick={() => {
+                if (isControlledEmbed && (num === 1 || num === 2)) onPathBControlledStepChange!(num);
+                else setInternalScreen(num);
+              }}
               className={cn(
                 "flex items-center gap-1.5 rounded-md px-1 py-0.5 transition-colors",
                 isActive ? "cursor-default" : "hover:bg-muted/60 cursor-pointer",
@@ -2608,12 +3607,12 @@ function PracticesQuestionnaire({ sessionId, stepData, onConfirm }: PracticesQue
                 {label}
               </span>
             </button>
-            {i < 2 && <div className="w-4 h-px bg-border mx-1" />}
+            {i < practicesSubStepLabels.length - 1 && <div className="w-4 h-px bg-border mx-1" />}
           </div>
         );
       })}
     </div>
-  );
+  ) : null;
 
   // ── Browse card ────────────────────────────────────────────────────────────
 
@@ -2658,6 +3657,8 @@ function PracticesQuestionnaire({ sessionId, stepData, onConfirm }: PracticesQue
 
   // ── Priority row ───────────────────────────────────────────────────────────
 
+  const practiceTierTopLabel = embedPathB ? "Highest priority" : "Top Priority";
+
   const renderPriorityRow = (sel: TaxonomySelection, canMoveUp: boolean, canMoveDown: boolean) => {
     const tierColors: Record<string, string> = {
       most_important: "bg-primary text-white border-primary",
@@ -2665,7 +3666,7 @@ function PracticesQuestionnaire({ sessionId, stepData, onConfirm }: PracticesQue
       nice_to_have: "bg-muted text-muted-foreground border-border",
     };
     const tierLabel: Record<string, string> = {
-      most_important: "Top Priority",
+      most_important: practiceTierTopLabel,
       important: "Important",
       nice_to_have: "Nice to Have",
     };
@@ -2709,10 +3710,21 @@ function PracticesQuestionnaire({ sessionId, stepData, onConfirm }: PracticesQue
     );
   }
 
+  const primaryRows = pathBPartitionPractices
+    ? selectedPractices.filter((s) => primaryIdSet.has(s.id))
+    : [];
+  const additionalPracticesForTiers = pathBPartitionPractices
+    ? selectedPractices.filter((s) => !primaryIdSet.has(s.id))
+    : selectedPractices;
+  const additionalSelectedList = pathBPartitionPractices
+    ? selectedPractices.filter((s) => !primaryIdSet.has(s.id))
+    : selectedPractices;
+
   const isPracticeSelected = (item: TaxonomyItem) =>
     selectedPractices.some((s) => s.id === item.id || s.name.toLowerCase() === item.name.toLowerCase());
 
   const handlePracticeToggle = (item: TaxonomyItem) => {
+    if (primaryIdSet.has(item.id)) return;
     userHasEdited.current = true;
     if (isPracticeSelected(item)) {
       const next = selectedPractices.filter((s) => s.id !== item.id);
@@ -2736,18 +3748,33 @@ function PracticesQuestionnaire({ sessionId, stepData, onConfirm }: PracticesQue
           {screen === 1 && (
             <div className="space-y-6">
               <div>
-                <h1 className="text-3xl font-display font-bold text-foreground leading-tight">Select your practices & experiences</h1>
+                <h1 className="text-3xl font-display font-bold text-foreground leading-tight">
+                  {embedPathB ? (
+                    (() => {
+                      const n = typeof stepData.experience?.name === "string" ? stepData.experience.name.trim() : "";
+                      return n ? `Any other practices you want "${n}" to include?` : "Any other practices you want your model to include?";
+                    })()
+                  ) : (
+                    "Select your practices & experiences"
+                  )}
+                </h1>
                 <p className="text-muted-foreground text-base mt-1.5 leading-relaxed max-w-2xl">
-                  Review the practices identified from your documents, then add or remove any to match this initiative.
+                  {embedPathB
+                    ? "Your primary practices are already set. Add any other practices you want the model to consider — they’ll appear on the next step for prioritization."
+                    : "Review the practices identified from your documents, then add or remove any to match this initiative."}
                 </p>
               </div>
 
               {/* Compact selection summary */}
               <div className="flex items-center gap-3 flex-wrap rounded-xl border border-border bg-muted/20 px-4 py-3">
                 <span className="text-sm font-semibold text-foreground shrink-0">
-                  {selectedPractices.length > 0 ? `${selectedPractices.length} selected` : "None selected yet"}
+                  {additionalSelectedList.length > 0
+                    ? `${additionalSelectedList.length} additional selected`
+                    : pathBPartitionPractices
+                      ? "No additional practices yet"
+                      : "None selected yet"}
                 </span>
-                {selectedPractices.map((sel) => (
+                {additionalSelectedList.map((sel) => (
                   <div key={sel.id} className="flex items-center gap-1 px-2.5 py-1 rounded-full border border-primary/30 bg-primary/5 text-xs font-medium text-primary">
                     <span>{sel.name}</span>
                     <button type="button"
@@ -2762,7 +3789,7 @@ function PracticesQuestionnaire({ sessionId, stepData, onConfirm }: PracticesQue
               {/* Full grid — all practices, toggle in place */}
               <div className="space-y-5">
                 {PRACTICE_GROUPS.map((group) => {
-                  const groupItems = practices.filter((t) => t.group === group.key);
+                  const groupItems = practices.filter((t) => t.group === group.key && !primaryIdSet.has(t.id));
                   if (groupItems.length === 0) return null;
                   const GroupIcon = GROUP_ICON_MAP[group.key];
                   return (
@@ -2772,13 +3799,18 @@ function PracticesQuestionnaire({ sessionId, stepData, onConfirm }: PracticesQue
                         <h3 className="text-sm font-bold text-foreground">{group.label}</h3>
                       </div>
                       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 auto-rows-fr">
-                        {groupItems.map((item) => renderBrowseCard(item, isPracticeSelected(item), initialPrefilled.current.has(item.id), () => handlePracticeToggle(item)))}
+                        {groupItems.map((item) => renderBrowseCard(
+                          item,
+                          isPracticeSelected(item),
+                          initialPrefilled.current.has(item.id) && !primaryIdSet.has(item.id),
+                          () => handlePracticeToggle(item),
+                        ))}
                       </div>
                     </div>
                   );
                 })}
                 {(() => {
-                  const ungrouped = practices.filter((t) => !PRACTICE_GROUPS.find((g) => g.key === t.group));
+                  const ungrouped = practices.filter((t) => !PRACTICE_GROUPS.find((g) => g.key === t.group) && !primaryIdSet.has(t.id));
                   if (!ungrouped.length) return null;
                   return (
                     <div className="space-y-3">
@@ -2786,7 +3818,12 @@ function PracticesQuestionnaire({ sessionId, stepData, onConfirm }: PracticesQue
                         <h3 className="text-sm font-bold text-foreground">Other</h3>
                       </div>
                       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 auto-rows-fr">
-                        {ungrouped.map((item) => renderBrowseCard(item, isPracticeSelected(item), initialPrefilled.current.has(item.id), () => handlePracticeToggle(item)))}
+                        {ungrouped.map((item) => renderBrowseCard(
+                          item,
+                          isPracticeSelected(item),
+                          initialPrefilled.current.has(item.id) && !primaryIdSet.has(item.id),
+                          () => handlePracticeToggle(item),
+                        ))}
                       </div>
                     </div>
                   );
@@ -2799,26 +3836,60 @@ function PracticesQuestionnaire({ sessionId, stepData, onConfirm }: PracticesQue
           {screen === 2 && (
             <div className="space-y-6">
               <div>
-                <h1 className="text-3xl font-display font-bold text-foreground leading-tight">Prioritize your practices</h1>
+                <h1 className="text-3xl font-display font-bold text-foreground leading-tight">
+                  Prioritize your practices
+                </h1>
                 <p className="text-muted-foreground text-base mt-1.5 leading-relaxed max-w-2xl">
-                  Assign each practice a priority tier. Use the arrows to reorder within a tier. Max {MAX_TOP_PRIORITIES} Top Priority.
+                  {pathBPartitionPractices
+                    ? `Your primary practices are fixed at highest priority (not shown below). Assign ${practiceTierTopLabel.toLowerCase()}, important, or nice to have only to additional practices. Max ${MAX_TOP_PRIORITIES} additional in ${practiceTierTopLabel.toLowerCase()}.`
+                    : embedPathB
+                      ? `Assign each practice a priority tier. Use the arrows to reorder within a tier. Max ${MAX_TOP_PRIORITIES} ${practiceTierTopLabel.toLowerCase()}.`
+                      : `Assign each practice a priority tier. Use the arrows to reorder within a tier. Max ${MAX_TOP_PRIORITIES} top priority.`}
                 </p>
               </div>
+
+              {pathBPartitionPractices && primaryRows.length > 0 && (
+                <div className="rounded-xl border border-border overflow-hidden bg-muted/10">
+                  <div className="flex items-center gap-2 px-4 py-2.5 border-b border-border bg-primary/5">
+                    <span className="text-sm font-semibold text-primary">Primary practices (fixed)</span>
+                    <span className="text-xs text-muted-foreground">Highest priority — set on Experience details</span>
+                  </div>
+                  <ul className="divide-y divide-border">
+                    {primaryRows.map((sel) => (
+                      <li key={sel.id} className="px-4 py-3 text-sm font-medium text-foreground bg-background">
+                        {sel.name}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
 
               {selectedPractices.length === 0 ? (
                 <div className="rounded-xl border border-dashed border-border bg-muted/20 p-8 text-center">
                   <p className="text-sm text-muted-foreground">Nothing selected yet — go back to add some.</p>
                 </div>
+              ) : pathBPartitionPractices && additionalPracticesForTiers.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-border bg-muted/20 p-8 text-center">
+                  <p className="text-sm text-muted-foreground">
+                    No additional practices to prioritize — your primaries are enough. Continue when ready.
+                  </p>
+                </div>
               ) : (
                 <div className="space-y-3">
                   {(
                     [
-                      { key: "most_important" as const, label: "Top Priority", note: `max ${MAX_TOP_PRIORITIES}`, headerCls: "bg-primary/5 border-primary/15", labelCls: "text-primary" },
-                      { key: "important" as const,      label: "Important",    note: null,                        headerCls: "bg-amber-50 border-amber-200",   labelCls: "text-amber-700" },
-                      { key: "nice_to_have" as const,   label: "Nice to Have", note: null,                        headerCls: "bg-muted/30 border-border",       labelCls: "text-muted-foreground" },
+                      {
+                        key: "most_important" as const,
+                        label: practiceTierTopLabel,
+                        note: `max ${MAX_TOP_PRIORITIES}${pathBPartitionPractices ? " additional" : ""}`,
+                        headerCls: "bg-primary/5 border-primary/15",
+                        labelCls: "text-primary",
+                      },
+                      { key: "important" as const, label: "Important", note: null, headerCls: "bg-amber-50 border-amber-200", labelCls: "text-amber-700" },
+                      { key: "nice_to_have" as const, label: "Nice to Have", note: null, headerCls: "bg-muted/30 border-border", labelCls: "text-muted-foreground" },
                     ] as const
                   ).map((tier) => {
-                    const tierItems = selectedPractices.filter((s) => s.importance === tier.key);
+                    const tierItems = additionalPracticesForTiers.filter((s) => s.importance === tier.key);
                     return (
                       <div key={tier.key} className="rounded-xl border border-border overflow-hidden">
                         <div className={cn("flex items-center gap-2 px-4 py-2.5 border-b border-border", tier.headerCls)}>
@@ -2835,7 +3906,7 @@ function PracticesQuestionnaire({ sessionId, stepData, onConfirm }: PracticesQue
                         ) : (
                           <div className="divide-y divide-border">
                             {tierItems.map((sel, posInTier) =>
-                              renderPriorityRow(sel, posInTier > 0, posInTier < tierItems.length - 1)
+                              renderPriorityRow(sel, posInTier > 0, posInTier < tierItems.length - 1),
                             )}
                           </div>
                         )}
@@ -2847,8 +3918,8 @@ function PracticesQuestionnaire({ sessionId, stepData, onConfirm }: PracticesQue
             </div>
           )}
 
-          {/* Screen 3: Practices Context */}
-          {screen === 3 && (
+          {/* Screen 3: Practices Context (Path A standalone step only) */}
+          {!embedPathB && screen === 3 && (
             <div className="space-y-6">
               <div>
                 <h1 className="text-3xl font-display font-bold text-foreground leading-tight">Anything else about your practices?</h1>
@@ -2867,6 +3938,7 @@ function PracticesQuestionnaire({ sessionId, stepData, onConfirm }: PracticesQue
                 onStopRecording={handleStopRecording}
                 isUploadingDoc={isUploadingDoc}
                 onFileChange={handleContextDocUpload}
+                selectedItems={selectedPractices}
               />
             </div>
           )}
@@ -2875,19 +3947,21 @@ function PracticesQuestionnaire({ sessionId, stepData, onConfirm }: PracticesQue
       </div>
 
       {/* Floating nav */}
-      <div className="fixed bottom-8 left-1/2 -translate-x-1/2 flex flex-row gap-2 z-50">
-        <button type="button" onClick={goBack} disabled={screen === 1} title="Previous"
-          className="w-10 h-10 rounded-lg border border-border bg-background shadow-md flex items-center justify-center hover:bg-muted disabled:opacity-30 transition-colors">
-          <ChevronLeft className="w-4 h-4 text-foreground" />
-        </button>
-        <button type="button" onClick={goNext} disabled={isSaving} title="Next"
-          className="w-10 h-10 rounded-lg border border-border bg-background shadow-md flex items-center justify-center hover:bg-muted disabled:opacity-30 transition-colors">
-          {isSaving ? <Loader2 className="w-4 h-4 text-foreground animate-spin" /> : <ChevronRight className="w-4 h-4 text-foreground" />}
-        </button>
-      </div>
+      {!pathBHideFloatingNav && (
+        <div className="fixed bottom-8 left-1/2 -translate-x-1/2 flex flex-row gap-2 z-50">
+          <button type="button" onClick={goBack} disabled={screen === 1 && !embedPathB} title="Previous"
+            className="w-10 h-10 rounded-lg border border-border bg-background shadow-md flex items-center justify-center hover:bg-muted disabled:opacity-30 transition-colors">
+            <ChevronLeft className="w-4 h-4 text-foreground" />
+          </button>
+          <button type="button" onClick={goNext} disabled={isSaving} title="Next"
+            className="w-10 h-10 rounded-lg border border-border bg-background shadow-md flex items-center justify-center hover:bg-muted disabled:opacity-30 transition-colors">
+            {isSaving ? <Loader2 className="w-4 h-4 text-foreground animate-spin" /> : <ChevronRight className="w-4 h-4 text-foreground" />}
+          </button>
+        </div>
+      )}
     </div>
   );
-}
+});
 
 // ---------------------------------------------------------------------------
 // Step 8 — Model Conversation Panel
@@ -5051,6 +6125,12 @@ function SystemElementsQuestionnaire({ sessionId, stepData, onConfirm }: SystemE
   const qc = useQueryClient();
   const { toast } = useToast();
 
+  // v2: When user is in Path B, show experience name in context-page headings.
+  const isPathB = stepData.designScope === "specific_experience";
+  const rawExpNameLocal = (stepData.experience as Record<string, any>)?.name;
+  const experienceName: string | null =
+    typeof rawExpNameLocal === "string" && rawExpNameLocal.trim() !== "" ? rawExpNameLocal.trim() : null;
+
   const [groupIdx, setGroupIdx] = useState(0);
   const [questionIdx, setQuestionIdx] = useState(0);
   const [isContext, setIsContext] = useState(false);
@@ -5624,10 +6704,16 @@ function SystemElementsQuestionnaire({ sessionId, stepData, onConfirm }: SystemE
   // Context capture screen
   const renderContextScreen = () => {
     const gKey = currentGroup.key;
+    // In Path B, swap "your" → experience name in the heading where it makes sense.
+    // Falls back to the v1 title if no experience name has been entered.
+    const renderedTitle = (() => {
+      if (!isPathB || !experienceName) return currentGroup.contextTitle;
+      return currentGroup.contextTitle.replace(/your\b/i, `${experienceName}'s`);
+    })();
     return (
       <div className="space-y-6">
         <h1 className="text-3xl font-display font-bold text-foreground leading-tight">
-          {currentGroup.contextTitle}
+          {renderedTitle}
         </h1>
 
         <ContextCaptureCards
@@ -6192,9 +7278,11 @@ interface DecisionFrameReviewProps {
   onGoToStep: (step: number) => void;
   onConfirm: () => void;
   isConfirming: boolean;
+  designScope?: DesignScope;
 }
 
-function DecisionFrameReview({ stepData, stepsCompleted, onGoToStep, onConfirm, isConfirming }: DecisionFrameReviewProps) {
+function DecisionFrameReview({ stepData, stepsCompleted, onGoToStep, onConfirm, isConfirming, designScope }: DecisionFrameReviewProps) {
+  const isPathB = designScope === "specific_experience";
   const s1 = stepData["1"] || {};
   const s2 = stepData["2"] || {};
   const s3 = stepData["3"] || {};
@@ -6287,6 +7375,17 @@ function DecisionFrameReview({ stepData, stepsCompleted, onGoToStep, onConfirm, 
     );
   };
 
+  // Derive Path B experience data for the Decision Frame card
+  const exp = isPathB ? ((stepData.experience as Record<string, any>) || {}) : {};
+  const primaryPracticeIds = new Set<number>(
+    ((exp.primaryPractices || []) as TaxonomySelection[]).map((p) => p.id)
+  );
+  const primaryPractices: TaxonomySelection[] = isPathB ? (exp.primaryPractices || []) : [];
+  const additionalPractices: TaxonomySelection[] = isPathB
+    ? ((s3.selected_practices || []) as TaxonomySelection[]).filter((p) => !primaryPracticeIds.has(p.id))
+    : [];
+  const expHasData = !!(exp.name || exp.description || (exp.targetedGradeBands?.length ?? 0) > 0 || primaryPractices.length > 0 || additionalPractices.length > 0 || s3.selected_practices?.length > 0);
+
   return (
     <div className="w-full h-full overflow-hidden flex flex-col bg-muted/30">
       <ScrollArea className="flex-1 min-h-0">
@@ -6324,20 +7423,50 @@ function DecisionFrameReview({ stepData, stepsCompleted, onGoToStep, onConfirm, 
                 {renderRow("Context", s1.context)}
               </SectionCard>
 
-              {/* Step 2 — Aims for Learners */}
-              <SectionCard stepNum={2} title="Aims for Learners" icon={Target} hasData={Object.keys(s2).length > 0}>
-                {renderRow("Outcomes Summary", s2.outcomes_summary)}
-                {renderBadges("Outcomes", s2.selected_outcomes || [])}
-                {renderRow("LEAPs Summary", s2.leaps_summary)}
-                {renderBadges("LEAPs", s2.selected_leaps || [])}
+              {/* Path B — Define Experience card (replaces Practices in Path B) */}
+              {isPathB && (
+                <SectionCard stepNum={2} title="Define Experience" icon={BookOpen} hasData={expHasData}>
+                  {renderRow("Experience", exp.name)}
+                  {renderRow("Description", exp.description)}
+                  {renderRow("Grade Levels", Array.isArray(exp.targetedGradeBands) && exp.targetedGradeBands.length > 0 ? exp.targetedGradeBands.join(", ") : undefined)}
+                  {renderBadges("Primary Practices", primaryPractices)}
+                  {renderBadges("Additional Practices", additionalPractices)}
+                  {/* Fallback: show all practices if experience hasn't been split yet */}
+                  {primaryPractices.length === 0 && additionalPractices.length === 0 && renderBadges("Practices", s3.selected_practices || [])}
+                  {renderRow("Experience Summary", s3.experience_summary)}
+                </SectionCard>
+              )}
+
+              {/* Outcomes */}
+              <SectionCard
+                stepNum={isPathB ? 3 : 2}
+                title="Outcomes"
+                icon={Target}
+                hasData={!!(s2.selected_outcomes?.length || s2.outcomes_summary)}
+              >
+                {renderRow("Summary", s2.outcomes_summary)}
+                {renderBadges("Selected", s2.selected_outcomes || [])}
               </SectionCard>
 
-              {/* Step 3 — Learning Experience & Practices */}
-              <SectionCard stepNum={3} title="Learning Experience & Practices" icon={BookOpen} hasData={Object.keys(s3).length > 0}>
-                {renderRow("Experience Summary", s3.experience_summary)}
-                {renderRow("Practices Summary", s3.practices_summary)}
-                {renderBadges("Practices", s3.selected_practices || [])}
+              {/* LEAPs */}
+              <SectionCard
+                stepNum={9}
+                title="LEAPs"
+                icon={Zap}
+                hasData={!!(s2.selected_leaps?.length || s2.leaps_summary)}
+              >
+                {renderRow("Summary", s2.leaps_summary)}
+                {renderBadges("Selected", s2.selected_leaps || [])}
               </SectionCard>
+
+              {/* Path A only — Learning Experience & Practices */}
+              {!isPathB && (
+                <SectionCard stepNum={3} title="Learning Experience & Practices" icon={BookOpen} hasData={Object.keys(s3).length > 0}>
+                  {renderRow("Experience Summary", s3.experience_summary)}
+                  {renderRow("Practices Summary", s3.practices_summary)}
+                  {renderBadges("Practices", s3.selected_practices || [])}
+                </SectionCard>
+              )}
 
               {/* Step 4 — System Elements */}
               <SectionCard stepNum={4} title="System Elements" icon={Layers} hasData={Object.keys(s4).length > 0}>
@@ -6508,14 +7637,21 @@ function DecisionFramePanel({ stepData, stepsCompleted }: { stepData: Record<str
             </div>
           </div>
 
-          {/* Step 2 — Aims */}
+          {/* Outcomes */}
           <div className="p-4 rounded-md bg-white border border-border/50">
-            {sectionHeader(2, "Aims for Learners")}
+            {sectionHeader(2, "Outcomes")}
             <div className="space-y-1.5">
-              {renderRow("Outcomes Summary", s2.outcomes_summary)}
-              {renderBadges("Outcomes", s2.selected_outcomes || [])}
-              {renderRow("LEAPs Summary", s2.leaps_summary)}
-              {renderBadges("LEAPs", s2.selected_leaps || [])}
+              {renderRow("Summary", s2.outcomes_summary)}
+              {renderBadges("Selected", s2.selected_outcomes || [])}
+            </div>
+          </div>
+
+          {/* LEAPs */}
+          <div className="p-4 rounded-md bg-white border border-border/50">
+            {sectionHeader(9, "LEAPs")}
+            <div className="space-y-1.5">
+              {renderRow("Summary", s2.leaps_summary)}
+              {renderBadges("Selected", s2.selected_leaps || [])}
             </div>
           </div>
 

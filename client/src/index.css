@@ -1,82 +1,185 @@
-@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap');
+/* ===================================================================
+   Transcend brand theme — DROP-IN REPLACEMENT for client/src/index.css
+   ===================================================================
+   Re-skins every shadcn primitive (Button, Card, Badge, Input, Dialog,
+   Sidebar, etc.) by swapping the HSL CSS variables they consume.
+   No component file changes are required for the global re-skin.
+
+   Source palette: Transcend logo SVG + transcendeducation.org
+     Navy   #1A4C80   hsl(211 66% 30%)
+     Coral  #EE454B   hsl(358 84% 60%)
+     Teal   #5BC3B4   hsl(170 47% 56%)
+     Sand   #FAF7F0
+   =================================================================== */
+
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800;900&family=Inter:wght@400;500;600;700&display=swap');
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 :root {
-  --font-sans: 'Inter', sans-serif;
-  --font-display: 'Outfit', sans-serif;
+  --font-sans:    'Inter', system-ui, -apple-system, sans-serif;
+  --font-display: 'Outfit', 'Helvetica Neue', system-ui, sans-serif;
+  --font-serif:   Georgia, serif;
+  --font-mono:    ui-monospace, 'JetBrains Mono', 'Fira Code', monospace;
 
-  /* Transcend Education Palette */
-  --background: 0 0% 100%;
-  --foreground: 210 11% 15%;
+  /* ---- Surfaces ---- */
+  --background: 36 38% 97%;       /* warm sand-paper */
+  --foreground: 211 50% 15%;      /* deep navy ink */
 
   --card: 0 0% 100%;
-  --card-foreground: 210 11% 15%;
+  --card-foreground: 211 50% 15%;
+  --card-border: 220 14% 92%;
 
   --popover: 0 0% 100%;
-  --popover-foreground: 210 11% 15%;
+  --popover-foreground: 211 50% 15%;
+  --popover-border: 220 14% 92%;
 
-  /* Primary: Transcend Teal/Green */
-  --primary: 165 63% 40%;
+  /* ---- Primary = Navy (structural authority, buttons, active states) ---- */
+  --primary: 211 66% 30%;
   --primary-foreground: 0 0% 100%;
+  --primary-border: 211 66% 24%;
 
-  /* Secondary: Neutral warm gray (clean, not red) */
-  --secondary: 40 10% 94%;
-  --secondary-foreground: 210 11% 25%;
+  /* ---- Secondary = warm gray (neutral/outlined button surfaces) ---- */
+  --secondary: 36 28% 94%;
+  --secondary-foreground: 211 50% 15%;
+  --secondary-border: 220 14% 88%;
 
-  /* Muted: Warm Grays */
-  --muted: 40 18% 96%;
-  --muted-foreground: 210 11% 45%;
+  /* ---- Muted = warm gray ---- */
+  --muted: 36 28% 94%;
+  --muted-foreground: 211 20% 38%;
+  --muted-border: 220 14% 88%;
 
-  /* Accent: Transcend Blue */
-  --accent: 207 90% 54%;
-  --accent-foreground: 0 0% 100%;
+  /* ---- Accent = Teal (supporting motion / hover halos) ---- */
+  --accent: 170 47% 92%;
+  --accent-foreground: 170 56% 24%;
+  --accent-border: 170 47% 80%;
 
-  --destructive: 0 84% 60%;
+  --destructive: 0 75% 52%;
   --destructive-foreground: 0 0% 100%;
+  --destructive-border: 0 75% 44%;
 
-  --border: 40 15% 90%;
-  --input: 40 15% 90%;
-  --ring: 165 63% 40%;
+  --border: 220 14% 90%;
+  --input: 220 14% 90%;
+  --ring: 211 66% 30%;            /* navy focus ring */
 
-  --radius: 0.5rem;
+  --radius: 0.625rem;             /* 10px — slightly softer than shadcn default */
+
+  /* outline variants used by Button / Badge `outline` */
+  --button-outline: hsl(220 14% 88%);
+  --badge-outline:  hsl(220 14% 88%);
+
+  /* hover/active elevation (consumed by .hover-elevate / .active-elevate-2) */
+  --elevate-1: rgba(26, 76, 128, 0.06);
+  --elevate-2: rgba(26, 76, 128, 0.10);
+
+  /* charts */
+  --chart-1: 211 66% 30%;
+  --chart-2: 358 84% 60%;
+  --chart-3: 170 47% 56%;
+  --chart-4: 200 50% 70%;
+  --chart-5: 36 60% 60%;
+
+  /* sidebar (3-pane workflow layout) */
+  --sidebar: 211 66% 30%;
+  --sidebar-foreground: 0 0% 100%;
+  --sidebar-border: 211 66% 24%;
+  --sidebar-ring: 358 84% 60%;
+  --sidebar-primary: 211 66% 30%;
+  --sidebar-primary-foreground: 0 0% 100%;
+  --sidebar-primary-border: 211 66% 24%;
+  --sidebar-accent: 211 50% 22%;
+  --sidebar-accent-foreground: 0 0% 100%;
+  --sidebar-accent-border: 211 50% 18%;
+
+  /* brand swatches available as raw hex too */
+  --t-navy: #1A4C80;
+  --t-navy-deep: #0F3060;
+  --t-coral: #EE454B;
+  --t-coral-deep: #C42E2E;
+  --t-teal: #5BC3B4;
+  --t-sand: #FAF7F0;
 }
 
 @layer base {
   body {
-    @apply bg-background text-foreground antialiased selection:bg-primary/20;
+    @apply bg-background text-foreground antialiased;
     font-family: var(--font-sans);
+    font-feature-settings: 'cv11', 'ss01';
   }
 
+  /* Display headings: Outfit, uppercase, tight, navy. */
   h1, h2, h3, h4, h5, h6 {
     font-family: var(--font-display);
-    @apply font-bold tracking-tight text-foreground;
+    @apply tracking-tight;
+    color: hsl(var(--foreground));
+    font-weight: 700;
   }
+
+  /* Hero / page-level title treatment.
+     Apply with className="t-display" for the uppercase brand voice. */
+  .t-display {
+    font-family: var(--font-display);
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: -0.005em;
+    line-height: 1.05;
+    color: hsl(var(--foreground));
+  }
+
+  .t-eyebrow {
+    font-family: var(--font-display);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: hsl(var(--primary));
+  }
+
+  ::selection { background: hsl(var(--primary) / 0.18); color: hsl(var(--foreground)); }
 }
 
 @layer utilities {
+  /* hover-elevate: subtle lift, brand-tinted shadow */
+  .hover-elevate {
+    transition: box-shadow 200ms cubic-bezier(0.22,0.61,0.36,1),
+                transform 200ms cubic-bezier(0.22,0.61,0.36,1),
+                background-color 200ms cubic-bezier(0.22,0.61,0.36,1);
+  }
+  .hover-elevate:hover { box-shadow: 0 4px 14px var(--elevate-1); }
+  .active-elevate-2:active { box-shadow: 0 2px 6px var(--elevate-2); transform: translateY(1px); }
+
   .glass-panel {
-    @apply bg-white/80 backdrop-blur-md border border-white/20 shadow-xl;
+    @apply bg-white/85 backdrop-blur-md border border-white/30 shadow-xl;
   }
-  
-  .scrollbar-hide::-webkit-scrollbar {
-    display: none;
-  }
-  
-  .scrollbar-hide {
-    -ms-overflow-style: none;
-    scrollbar-width: none;
+
+  .scrollbar-hide::-webkit-scrollbar { display: none; }
+  .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+
+  /* the dashed teal swoop motif used in marketing materials */
+  .t-swoop::before {
+    content: '';
+    position: absolute;
+    inset: -40px auto auto -40px;
+    width: 320px; height: 200px;
+    border-top: 2px dashed var(--t-teal);
+    border-radius: 100% 0 0 0;
+    opacity: 0.6;
+    pointer-events: none;
   }
 }
 
-/* Chat Bubble Animations */
+/* Chat bubble animation (preserved from the original) */
 @keyframes slideIn {
   from { opacity: 0; transform: translateY(10px); }
-  to { opacity: 1; transform: translateY(0); }
+  to   { opacity: 1; transform: translateY(0); }
 }
+.animate-slide-in { animation: slideIn 0.3s ease-out forwards; }
 
-.animate-slide-in {
-  animation: slideIn 0.3s ease-out forwards;
+/* Coral focus ring is brighter than shadcn default; soften focus outline */
+*:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
+  border-radius: 6px;
 }

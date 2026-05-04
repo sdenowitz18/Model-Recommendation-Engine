@@ -1,4 +1,4 @@
-import { Switch, Route, Redirect, useLocation } from "wouter";
+import { Switch, Route, Redirect, useLocation, useParams } from "wouter";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
@@ -6,13 +6,18 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import NotFound from "@/pages/not-found";
 import Landing from "@/pages/Landing";
 import Sessions from "@/pages/Sessions";
-import Workflow from "@/pages/Workflow";
+import WorkflowV2 from "@/pages/WorkflowV2";
 import ModelDetail from "@/pages/ModelDetail";
 import LeapDetail from "@/pages/LeapDetail";
 import PracticeDetail from "@/pages/PracticeDetail";
 import AdminSettings from "@/pages/AdminSettings";
 import Login from "@/pages/Login";
 import { useAuth } from "@/hooks/use-auth";
+
+function LegacyV2Redirect() {
+  const params = useParams<{ sessionId: string }>();
+  return <Redirect to={`/ccl/${params.sessionId}`} />;
+}
 
 function ProtectedRoute({ component: Component }: { component: React.ComponentType }) {
   const { isAuthenticated, isLoading } = useAuth();
@@ -41,7 +46,9 @@ function Router() {
       {/* Session list for CCL */}
       <Route path="/ccl" component={() => <ProtectedRoute component={Sessions} />} />
       {/* Workflow for a specific session */}
-      <Route path="/ccl/:sessionId" component={() => <ProtectedRoute component={Workflow} />} />
+      <Route path="/ccl/:sessionId" component={() => <ProtectedRoute component={WorkflowV2} />} />
+      {/* Legacy /ccl-v2 → redirect to unified route */}
+      <Route path="/ccl-v2/:sessionId" component={LegacyV2Redirect} />
       {/* Legacy /workflow → send to sessions list */}
       <Route path="/workflow">
         <Redirect to="/ccl" />

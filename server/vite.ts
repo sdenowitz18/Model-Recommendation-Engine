@@ -32,7 +32,10 @@ export async function setupVite(server: Server, app: Express) {
   app.use(vite.middlewares);
 
   app.use("/{*path}", async (req, res, next) => {
-    if (req.path.startsWith("/api")) return next();
+    // With Express 5's `/{*path}` mount, `req.path` is stripped to `/` — use originalUrl
+    // so `/api/*` requests are not served the SPA HTML shell.
+    const pathname = req.originalUrl.split("?")[0] ?? "";
+    if (pathname.startsWith("/api")) return next();
     const url = req.originalUrl;
 
     try {

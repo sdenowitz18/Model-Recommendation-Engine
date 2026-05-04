@@ -1,364 +1,237 @@
 # Transcend Model Recommendation Engine — Handoff Document
 
-**Date:** February 8, 2026
+**Last updated:** May 4, 2026
 **Project:** Transcend CCL Model Recommendation Assistant
-**Repo:** `model-rec-engine`
+**Repo:** `sdenowitz18/Model-Recommendation-Engine` (GitHub)
+**Local path:** `/Users/stevendenowitz/Downloads/Transcend/model-rec-engine` (moving to `/Users/stevendenowitz/coding-projects/model-rec-engine`)
+**Dev server:** `http://localhost:5001` (PORT set in `.env`)
 
 ---
 
-## 1. Context & Intent
+## READ THIS FIRST — What We're Working On Right Now
 
-### Problem Statement
+The V2 workflow (Path A / Path B "Choose Your Adventure") has been validated with the team and is being integrated as the **primary core experience**. The following items are the immediate next steps. Read through all of them before starting work — they are interconnected.
 
-Transcend Education's Design Partners need a structured, repeatable process to identify Career-Connected Learning (CCL) models and point solutions that best fit a school or district community's vision, constraints, and context. Previously this was manual and ad-hoc — partners relied on memory, spreadsheets, and unstructured conversations to match schools with vetted CCL models from the Transcend Exchange.
+### Immediate Next Up
 
-### User Impact
+1. **Unify URL routing** — all sessions should use `/ccl/:sessionId` pointing to `WorkflowV2.tsx`. Currently V2 sessions use `/ccl-v2/:sessionId`. Update `App.tsx` to route `/ccl/:sessionId` to `WorkflowV2` and retire the `/ccl-v2/` route.
 
-- **Primary users:** Transcend Design Partners (internal staff)
-- **End beneficiaries:** School and district leaders seeking CCL-aligned instructional models
-- Without this tool, recommendations are inconsistent, time-consuming, and lack a transparent rationale
-- The tool provides a shared language (taxonomy) and a deterministic scoring engine so recommendations are defensible and reproducible
+2. **Remove V1 artifacts** — once routing is unified:
+   - Delete or archive `client/src/pages/Workflow.tsx` (the old V1 workflow, ~9,000+ lines)
+   - Remove the "v2" beaker button (`<Beaker>`) from session cards in `Sessions.tsx`
+   - Remove the "Workflow version" v1/v2 picker from the new session dialog in `Sessions.tsx`
+   - All new sessions navigate to `/ccl/:sessionId`
 
-### Success Criteria
+3. **Delete existing V1 sessions** — existing sessions in the database that were created before V2 are not compatible with the new unified routing. The plan is to delete them and start fresh. No migration needed — just a one-time DB wipe of existing sessions and their associated workflow data.
 
-1. Design Partners can walk through a 7-step guided workflow capturing school context, aims, practices, constraints, and preferences
-2. The system generates ranked model recommendations with clear alignment rationale (High/Medium/Low/None) across multiple dimensions
-3. All inputs are editable, persistent, and reflected in a synthesized Decision Frame before recommendations are generated
-4. Grade band matching works correctly (e.g., "High School" maps to 9-12 and overlaps K-12 models)
-5. Constraint detection flags potential conflicts between user constraints and model characteristics
-6. Admin can configure AI prompts, upload knowledge base documents, manage taxonomy, and sync models from Airtable
+4. **Move document upload in Path A** — in Path A (whole CCL program), the Upload Documents step currently appears as Step 0 (before School Context). This needs to change: **upload should happen after School Context (Step 1)**, as Step 1.5 or as the first step that appears after School Context is confirmed and the path picker selects Path A. The upload step then leads to Aims for Learners (Step 2). Look at `WorkflowV2.tsx` around `handleAdvanceFromPathADocuments` and `V2_STEPS_PATH_A` to understand current behavior.
 
----
+5. **Add `experience_summary` to the prefill pipeline** — the prefill route (`server/routes.ts`, search for `prefillFromDocuments`, ~line 1065) extracts leaps, outcomes, and practices from uploaded documents. It should also generate a short `experience_summary` string and write it to `stepData["3"].experience_summary`. Currently the UI shows a placeholder "AI-generated summary will appear here" with no backend generation.
 
-## 2. Source & Non-Source Code
+6. **Add primary practice detection to Path B prefill** — when prefilling in Path B, the pipeline should attempt to identify the primary practice described in the uploaded documents and suggest it in `stepData.experience.primaryPractices`. This is a suggestion only — the user can override it in the Experience Details form.
 
-### Source Code (in-repo)
-
-| Layer | Key Files | Purpose |
-|-------|-----------|---------|
-| **Client** | `client/src/pages/Workflow.tsx` | Main workflow UI — all 7 step panels, chat, taxonomy selection, decision frame, recommendations |
-| | `client/src/pages/Landing.tsx` | Landing page with model type selection (CCL active; Math, Whole Child, COMP3 coming soon) |
-| | `client/src/pages/ModelDetail.tsx` | Per-model detail page showing alignment overlap with user selections |
-| | `client/src/pages/LeapDetail.tsx` | Detail page for LEAP taxonomy items |
-| | `client/src/pages/PracticeDetail.tsx` | Detail page for Practice items (description + examples from design kit) |
-| | `client/src/pages/AdminSettings.tsx` | Admin UI for prompts, KB, taxonomy, Airtable sync, restore defaults |
-| | `client/src/pages/admin-import.tsx` | Excel model import UI |
-| | `client/src/App.tsx` | Router configuration (wouter) |
-| | `client/src/hooks/use-advisor.ts` | AI chat hook (sends messages, streams responses, handles step data patches) |
-| | `client/src/components/ui/*` | shadcn/ui component library (Radix primitives + Tailwind) |
-| **Server** | `server/index.ts` | Express server entry, error handlers, Vite dev setup |
-| | `server/routes.ts` | All API endpoints (~50 routes) |
-| | `server/recommendation-engine.ts` | Deterministic scoring engine — weighted points, grade band matching, constraint detection, context notes |
-| | `server/prompts.ts` | Default AI system prompts (global + per-step) |
-| | `server/storage.ts` | Database abstraction layer (Drizzle ORM queries) |
-| | `server/db.ts` | Drizzle + Neon Postgres connection |
-| | `server/openai.ts` | OpenAI client wrapper |
-| | `server/embeddings.ts` | RAG pipeline — chunking, embedding, retrieval for knowledge base |
-| | `server/seed-taxonomy.ts` | Seeds taxonomy items (outcomes, LEAPs, practices) from code |
-| | `server/restore-defaults.ts` | CLI script to restore taxonomy + default prompts to DB |
-| | `server/airtable.ts` | Airtable sync client for models |
-| | `server/file-parser.ts` | PDF/DOCX/text file content extraction |
-| **Shared** | `shared/schema.ts` | Drizzle schema definitions, TypeScript types, workflow step definitions |
-| | `shared/routes.ts` | Typed API route definitions |
-| **Config** | `drizzle.config.ts` | Drizzle Kit config |
-| | `vite.config.ts` | Vite config with React plugin |
-| | `tailwind.config.ts` | Tailwind CSS config |
-| | `tsconfig.json` | TypeScript config |
-| | `.env` | Environment variables (DATABASE_URL, OPENAI_API_KEY, etc.) — **gitignored** |
-
-### Non-Source / External Dependencies
-
-| Dependency | Purpose |
-|------------|---------|
-| **Neon PostgreSQL** | Primary database (hosted, serverless Postgres) |
-| **OpenAI API** | GPT-4 for conversational AI advisor at each workflow step |
-| **OpenAI Embeddings** | text-embedding-3-small for RAG knowledge base retrieval |
-| **Airtable** | Optional model sync source (Transcend Exchange models) |
-| **Radix UI / shadcn** | UI component primitives |
-| **TanStack Query** | Server state management (caching, mutations) |
-| **Drizzle ORM** | Type-safe SQL query builder |
-| **react-resizable-panels** | Resizable pane layout |
-| **wouter** | Lightweight client-side routing |
+7. **Fix session progress display for Path B** — `Sessions.tsx` uses `TOTAL_STEPS = 8` and "Step X of 8" for all sessions. Path B has a different effective step count. The `stepLabel()` and progress bar logic should account for `designScope` in the session's step data.
 
 ---
 
-## 3. System Map
+## Project Overview
 
-### Architecture Overview
+The Model Recommendation Engine is an internal tool for **Transcend Design Partners** to match schools with Career-Connected Learning (CCL) models from the Transcend Exchange. It replaces ad-hoc manual recommendations with a structured, AI-assisted workflow.
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                     Browser (React SPA)                  │
-│                                                          │
-│  Landing ─→ Workflow ─→ 7-Step UI ─→ Recommendations    │
-│  ┌──────────┐  ┌──────────────┐  ┌──────────────────┐   │
-│  │ Chat     │  │ Content      │  │ Step Panels:     │   │
-│  │ (AI      │  │ (Taxonomy,   │  │  SchoolContext    │   │
-│  │ Advisor) │  │  Documents)  │  │  TaxonomySelect  │   │
-│  │          │  │              │  │  Constraints      │   │
-│  └──────────┘  └──────────────┘  │  Preferences      │   │
-│                                  │  DecisionFrame    │   │
-│                                  │  Recommendations  │   │
-│                                  └──────────────────────┘│
-└──────────────────────┬──────────────────────────────────┘
-                       │ HTTP API
-┌──────────────────────▼──────────────────────────────────┐
-│                Express Server (Node.js + tsx)             │
-│                                                          │
-│  Routes ─→ Storage ─→ Drizzle ORM ─→ Neon Postgres     │
-│     │                                                    │
-│     ├─→ OpenAI (chat completions, streaming)            │
-│     ├─→ Embeddings (RAG: chunk → embed → retrieve)      │
-│     ├─→ Recommendation Engine (deterministic scoring)    │
-│     └─→ Airtable Sync (model import)                   │
-└─────────────────────────────────────────────────────────┘
-                       │
-┌──────────────────────▼──────────────────────────────────┐
-│              Neon PostgreSQL Database                     │
-│                                                          │
-│  Tables: sessions, workflow_progress, step_conversations,│
-│  step_documents, models, recommendations, taxonomy_items,│
-│  knowledge_base, kb_chunks, advisor_config,              │
-│  step_advisor_configs, airtable_config, school_contexts, │
-│  taxonomy_group_labels                                   │
-└─────────────────────────────────────────────────────────┘
-```
+**GitHub:** `git@github.com:sdenowitz18/Model-Recommendation-Engine.git`
+**Deployed via:** Vercel (connected to GitHub; `npm run build` build command)
+**Database:** Neon PostgreSQL (serverless, cloud-hosted)
+**Auth:** Email/password with bcrypt + Express sessions stored in Postgres
 
-### Data Flow: Recommendation Generation
+---
+
+## Architecture
 
 ```
-stepData (steps 1-5)
+Browser (React SPA, Vite)
     │
-    ├── Step 1: school_name, district, state, grade_band, context
-    ├── Step 2: selected_outcomes[], selected_leaps[], outcomes_summary, leaps_summary
-    ├── Step 3: selected_practices[], experience_summary, practices_summary
-    ├── Step 4: constraint_curriculum, constraint_community, ... (7 domains)
-    └── Step 5: impl_coaching, impl_pd, impl_selfserve, impl_observation,
-                evidence_threshold, open_to_stitching
-
-         │  POST /api/sessions/:id/recommendations
-         ▼
-┌─────────────────────────────────────────┐
-│       Recommendation Engine              │
-│                                          │
-│  For each model:                        │
-│    1. computeScore(aims, model.outcomes) │
-│    2. computeScore(practices, model.kp)  │
-│    3. checkGradeBand(model, user bands)  │
-│    4. detectConstraints(user, model)     │
-│    5. buildContextNotes(context, model)  │
-│    6. totalPoints = aims + practices     │
-│    7. sortScore = total × gradePenalty   │
-│                                          │
-│  Sort by sortScore, normalize to 0-100  │
-│  Save to recommendations table          │
-└─────────────────────────────────────────┘
+    │  HTTP + session cookie
+    ▼
+Express Server (Node.js + tsx)
+    ├── Auth routes (login, register, logout, /me)
+    ├── Session routes (create, list, rename, delete)
+    ├── Workflow routes (progress, chat, documents, prefill, reset)
+    ├── Model routes (recommendations, model detail)
+    └── Admin routes (prompts, KB, taxonomy, Airtable sync, import)
+         │
+         ├── Neon PostgreSQL (via Drizzle ORM)
+         ├── OpenAI API (chat completions, embeddings, web search)
+         └── Airtable API (model sync)
 ```
 
-### Scoring Weights
+### Key Tables
 
-| Importance Level | Weight |
-|-----------------|--------|
-| `most_important` | 3 |
-| `important` | 2 |
-| `nice_to_have` | 1 |
+| Table | Purpose |
+|-------|---------|
+| `users` | Email + bcrypt password hash |
+| `user_sessions` | Express session store (connect-pg-simple) |
+| `sessions` | Questionnaire sessions (one per school engagement) |
+| `workflow_progress` | `currentStep`, `stepsCompleted`, `stepData` (JSONB) |
+| `step_conversations` | AI chat history per session + step |
+| `step_documents` | Uploaded files with extracted text |
+| `models` | CCL models (name, grades, description, practices, outcomes) |
+| `recommendations` | Scored recommendations per session |
+| `taxonomy_items` | Outcomes, LEAPs, practices (seeded from code) |
+| `knowledge_base` / `kb_chunks` | Admin-uploaded KB docs + embeddings |
+| `advisor_config` / `step_advisor_configs` | AI prompt configuration |
+| `scoring_rules` / `model_field_defs` | Recommendation scoring rules |
 
-| Alignment Label | Percentage Threshold |
-|----------------|---------------------|
-| High | ≥ 60% |
-| Medium | ≥ 30% |
-| Low | ≥ 1% |
-| None | 0% |
+### stepData Structure
 
-### Grade Band Matching
+`workflow_progress.stepData` is a JSONB blob. Key structure:
 
-Grade band matching uses **numeric range overlap** (not string matching):
-
-- User input like "9-12" or "High School" is parsed to `[9, 12]`
-- Model grades like "K–12" (em-dash) are normalized and parsed to `[0, 12]`
-- Match = ranges overlap (`max1 >= min2 AND max2 >= min1`)
-- Special handling: "PK" = -1, "K" = 0, "Algebra 1" ≈ grade 9, common names mapped
-
----
-
-## 4. What Was Done
-
-### Features Built
-
-1. **7-Step Guided Workflow** — Full UI with AI chat advisor, taxonomy selection, document upload, and structured data capture at each step
-
-2. **Landing Page** — Model type selector (CCL active; Math, Whole Child, COMP3 marked "coming soon")
-
-3. **Taxonomy System** — Outcomes (4 groups), LEAPs (10 items with detail pages), Practices (19 items across 4 strands with descriptions and examples from the CCL Design Kit)
-
-4. **AI Chat Advisor** — Per-step AI conversations using GPT-4 with:
-   - Customizable system prompts (global + per-step)
-   - Knowledge base RAG (chunked documents with embeddings)
-   - Step data patching (AI extracts structured data from natural conversation)
-
-5. **Recommendation Engine** — Deterministic weighted scoring:
-   - Aims alignment (outcomes + LEAPs weighted by importance)
-   - Practices alignment (weighted by importance)
-   - Grade band matching (numeric range overlap with em-dash normalization)
-   - Constraint detection (fuzzy keyword matching against model descriptions)
-   - Context notes (fuzzy matching user context/summaries against models)
-   - Preference capture (implementation supports, evidence threshold, stitching)
-
-6. **Structured Step Data Capture**:
-   - **Step 1:** Editable fields for School Name, District, State, Grade Band (dropdown), Context
-   - **Step 2:** Taxonomy selection with importance levels + editable Outcomes Summary and LEAPs Summary
-   - **Step 3:** Taxonomy selection + editable Experience Summary and Practices Summary
-   - **Step 4:** 7 constraint domain text areas (Curriculum & Assessment, School Community & Culture, etc.)
-   - **Step 5:** Radio buttons for Implementation Supports (4 options × 3 preference levels), Evidence Threshold, Solution Architecture (stitching)
-
-7. **Decision Frame (Step 6)** — Synthesized read-only view of all inputs from Steps 1-5
-
-8. **Recommendation Cards (Step 7)** — 2-per-row grid showing:
-   - Aims Alignment (High/Medium/Low)
-   - Practices Alignment (High/Medium/Low)
-   - Constraints (with grade band and domain-specific flags)
-   - Context notes
-   - Link to detailed model page with overlap visualization
-
-9. **Model Detail Page** — Shows model info + specific alignment details for the user's session
-
-10. **Admin Settings** — Prompt customization, knowledge base upload, taxonomy management, Airtable sync, restore defaults
-
-11. **Resizable Panels** — Chat and content panes are resizable (drag handles)
-
-12. **Auto-normalization** — Grade band values like "High School" auto-convert to "9-12" and persist back
-
-13. **Error Resilience** — `uncaughtException` / `unhandledRejection` handlers prevent server crashes from transient DB/network errors; model sync won't delete existing data on empty Airtable response
+```json
+{
+  "designScope": "whole_program" | "specific_experience",
+  "experience": {
+    "name": "...",
+    "description": "...",
+    "targetedGradeBands": ["9", "10"],
+    "primaryPractices": [{ "id": 1, "name": "...", "importance": "most_important" }]
+  },
+  "1": { "school_name": "...", "district": "...", "state": "...", "grade_bands": ["9-12"], "context": "..." },
+  "2": { "selected_outcomes": [...], "selected_leaps": [...], "outcomes_summary": "...", "leaps_summary": "..." },
+  "3": { "selected_practices": [...], "experience_summary": "...", "practices_summary": "..." },
+  "4": { "constraint_curriculum": "...", "constraint_community": "...", ... },
+  "5": { "impl_coaching": "...", "evidence_threshold": "...", "open_to_stitching": "..." },
+  "8": { "selectedModelId": 42 }
+}
+```
 
 ---
 
-## 5. Decisions & Tradeoffs
+## V2 Workflow Architecture
 
-| Decision | Rationale | Tradeoff |
-|----------|-----------|----------|
-| **Deterministic scoring (not AI-based)** | Reproducible, transparent, debuggable recommendations. Users can see exactly why a model scored the way it did. | Less nuanced than LLM-based ranking; relies on keyword/fuzzy matching rather than semantic understanding of alignment |
-| **Fuzzy keyword matching for alignment** | Simple, fast, no additional API calls. Works reasonably for taxonomy names (e.g., "Whole-Child Focus" matching "whole child"). | Will miss semantic equivalents (e.g., "student agency" won't match "autonomy"); needs richer model metadata to improve |
-| **stepData as JSONB blob** | Flexible schema evolution — no migrations needed when adding new fields to step data | Harder to query specific fields; no DB-level validation of step data structure |
-| **Grade band as numeric range overlap** | Correctly handles edge cases (em-dashes, "Algebra 1", "PK-12", common school names). More robust than string matching. | Over-matches in edge cases (e.g., Algebra 1 ≈ grade 9 is an approximation) |
-| **AI step data patching** | Lets the AI extract structured data from natural conversation, reducing manual form-filling. | Sometimes sets values incorrectly (e.g., stored "High School" instead of "9-12"); requires normalization layer |
-| **Neon PostgreSQL (external)** | Persistent data not tied to Replit's ephemeral environment. | Requires network access; transient EADDRNOTAVAIL errors observed under load |
-| **Single-session model** | Simplifies MVP — one active session at a time per browser. | No multi-user support, no session history/comparison |
-| **react-resizable-panels** | Better UX — users can resize chat vs. content areas. | Adds complexity; had to debug initial integration issues |
-| **Radix Select for grade band** | Standard accessible dropdown with consistent styling. | Radix Select doesn't support empty string values (required using `undefined` for unset state) |
+`WorkflowV2.tsx` (~9,000 lines) is the current primary workflow file. Key concepts:
 
----
+### Path A (Whole CCL Program)
+Steps: School Context (1) → Upload Documents (0) → Aims (2) → Practices (3) → System Elements (4) → Model Preferences (5) → Decision Frame (6) → Recommendations (7) → Model Exploration (8)
 
-## 6. Known Issues & TODOs
+*Note: Step 0 appearing after Step 1 is an intentional V2 design — the path picker sends users back to step 0 after completing step 1. The chevron UI handles this correctly. This ordering is changing: upload will move to after School Context in the next sprint (see Next Up above).*
 
-### Known Issues
+### Path B (Specific Experience)
+Steps: School Context (1) → Define Experience (2, four sub-screens) → Aims (3) → System Elements (4) → Model Preferences (5) → Decision Frame (6) → Recommendations (7) → Model Exploration (8)
 
-| Issue | Severity | Details |
-|-------|----------|---------|
-| **Fuzzy matching is shallow** | Medium | Alignment scoring uses simple keyword matching. "Mentorship" won't match if the model says "mentoring" but not "mentorship" (partial word match). Needs stemming or semantic matching. |
-| **Preferences not yet scored** | Medium | Step 5 preferences (implementation supports, evidence threshold, stitching) are captured and stored in alignment data but do **not** yet affect the recommendation score. They're placeholders for future scoring once models have matching metadata. |
-| **Single session** | Low | The app creates/reuses one session. There's no session switcher, history, or multi-user support. |
-| **Pre-existing tsc errors** | Low | Running `tsc --noEmit` shows some pre-existing type errors in the codebase that were not introduced by recent changes. |
-| **Airtable sync safety** | Low | If Airtable returns 0 models (API error, empty response), the sync now throws instead of deleting all models. But there's no retry logic. |
+*No standalone Practices step — practices are captured inside Define Experience.*
 
-### TODOs / Future Enhancements
+### Data Compatibility Strategy
+V2 stores data in the same `stepData` keys as V1 so the recommendation engine (`server/recommendation-engine.ts`) works without modification:
+- Path B experience practices → `stepData["3"].selected_practices`
+- Path B aims → `stepData["2"]` (same as V1 Path A)
+- V2-specific data → `stepData.designScope`, `stepData.experience` (new keys, no conflict)
 
-| Priority | Item |
-|----------|------|
-| **High** | Add richer model metadata (implementation details, evidence base, grade-specific details) so constraint detection and preference scoring can be more precise |
-| **High** | Score Step 5 preferences against model `implementationSupports` field once models have structured data for coaching, PD, self-serve, observation |
-| **High** | Add semantic/embedding-based alignment scoring as a complement to fuzzy keyword matching |
-| **Medium** | Multi-session support — session list, comparison, history |
-| **Medium** | Expand to additional model types beyond CCL (Math, Whole Child, COMP3 — currently stubbed as "coming soon" on landing page) |
-| **Medium** | Add export functionality — generate a PDF/Word summary of the Decision Frame and Recommendations for sharing with school partners |
-| **Medium** | Improve constraint detection — use LLM to semantically evaluate whether a user's constraint conflicts with a model's approach, rather than keyword matching |
-| **Low** | Add unit tests for recommendation engine scoring logic |
-| **Low** | Add proper loading states and skeleton screens for all data-fetching panels |
-| **Low** | Rate limiting on AI chat endpoints |
+### Key Components in WorkflowV2.tsx
+
+| Component | Purpose |
+|-----------|---------|
+| `WorkflowV2` (default export) | Main layout, header, step routing, path picker state |
+| `StepContent` | Routes each step number to the correct component |
+| `PathPickerPanel` | Two-card UI for choosing Path A or Path B |
+| `ExperienceDefinitionPanel` | Path B Step 2 — 4 sub-screens (upload, details, practices, prioritize) |
+| `SchoolContextQuestionnaire` | Step 1 — typeform-style school context form |
+| `AimsForLearnersQuestionnaire` | Step 2 (Path A) / Step 3 (Path B) |
+| `PracticesQuestionnaire` | Step 3 (Path A only) |
+| `SystemElementsQuestionnaire` | Step 4 |
+| `ModelPreferencesQuestionnaire` | Step 5 |
+| `DecisionFrameReview` | Step 6 — read-only summary of all inputs |
+| `RecommendationsView` | Step 7 — recommendation cards |
+| `ModelConversationPanel` | Step 8 — model list + AI chat |
 
 ---
 
-## 7. Open Questions
+## Key Files Reference
 
-1. **How should "evidence threshold" affect scoring?** — Currently captured as "established" vs. "open to newer/emerging" but models don't have structured impact/evidence data yet. What metadata would be needed?
-
-2. **What constitutes a constraint "conflict"?** — Currently the engine flags keywords from user constraint text that appear in the model description. Should a mismatch be stricter (e.g., if user says "no technology" and model requires heavy tech)?
-
-3. **Stitching preference** — The user can indicate openness to combining models. How should this affect recommendations? Should the engine suggest 2-model combinations?
-
-4. **Model metadata richness** — Current model data from Airtable/Excel is relatively sparse (name, grades, description, outcomeTypes, keyPractices, implementationSupports). What additional structured fields would improve recommendations?
-
-5. **Multi-user / auth** — Is there a need for login, role-based access, or per-partner session management? Currently the app is open access.
-
-6. **Context notes quality** — The `buildContextNotes` function does shallow keyword matching between user context and model text. Should this use an LLM call for richer analysis?
+| File | Purpose |
+|------|---------|
+| `client/src/pages/WorkflowV2.tsx` | **Primary workflow** (~9,000 lines) — all step panels, path logic |
+| `client/src/pages/Workflow.tsx` | **V1 workflow (deprecated)** — to be retired |
+| `client/src/pages/Sessions.tsx` | Session list page |
+| `client/src/pages/Landing.tsx` | Model type selector (CCL active; Math, Whole Child, COMP3 coming soon) |
+| `client/src/pages/AdminSettings.tsx` | Admin UI |
+| `client/src/App.tsx` | Router configuration |
+| `client/src/hooks/use-talk-it-out.ts` | Voice recording → transcription hook |
+| `server/routes.ts` | All API endpoints (~1,900 lines) |
+| `server/recommendation-engine.ts` | Deterministic scoring engine |
+| `server/storage.ts` | Database abstraction layer (Drizzle ORM) |
+| `server/db.ts` | Neon Postgres connection |
+| `server/embeddings.ts` | RAG pipeline for knowledge base |
+| `server/file-parser.ts` | PDF/DOCX/text extraction |
+| `server/seed-taxonomy.ts` | Seeds outcomes, LEAPs, practices |
+| `server/seed-rules.ts` | Seeds scoring rules |
+| `shared/schema.ts` | Drizzle schema + TypeScript types + `WORKFLOW_STEPS` |
+| `shared/routes.ts` | Typed API route definitions |
 
 ---
 
-## 8. Cursor / Developer Notes
+## Environment Variables
 
-### Running Locally
+| Variable | Required | Notes |
+|----------|----------|-------|
+| `DATABASE_URL` | Yes | Neon PostgreSQL connection string |
+| `OPENAI_API_KEY` | Yes | Chat completions + embeddings + web search |
+| `PORT` | No | Default: 5001 (set in `.env`) |
+| `SESSION_SECRET` | Yes | Express session signing key |
+
+---
+
+## Running Locally
 
 ```bash
-# Install dependencies
 npm install
-
-# Create .env with required variables
-# DATABASE_URL=postgresql://...  (Neon connection string)
-# OPENAI_API_KEY=sk-...
-# PORT=3000
-
-# Push schema to database
-npm run db:push
-
-# Seed taxonomy (outcomes, LEAPs, practices)
-npm run db:seed
-
-# Restore default prompts + taxonomy
-npm run db:restore-defaults
-
-# Start dev server
-npm run dev
+npm run dev           # starts on http://localhost:5001
+npm run db:push       # push schema changes to Neon
+npm run db:seed       # seed taxonomy (outcomes, LEAPs, practices)
+npm run db:restore-defaults  # restore default prompts + taxonomy
 ```
-
-### Key Environment Variables
-
-| Variable | Required | Purpose |
-|----------|----------|---------|
-| `DATABASE_URL` | Yes | Neon PostgreSQL connection string |
-| `OPENAI_API_KEY` | Yes | OpenAI API key for chat + embeddings |
-| `PORT` | No | Server port (default: 3000 locally) |
-| `SESSION_SECRET` | No | Express session secret |
-
-### Database
-
-- **Provider:** Neon (serverless Postgres)
-- **ORM:** Drizzle with `drizzle-kit push` for schema sync (no migration files)
-- **Connection string:** In `.env` (gitignored)
-- See `DATABASE_SETUP.md` for full setup instructions
-
-### Codebase Conventions
-
-- **Client routing:** wouter (lightweight, no React Router)
-- **State management:** TanStack Query for server state; React useState/useEffect for local UI state
-- **Styling:** Tailwind CSS with shadcn/ui components
-- **API pattern:** Express routes return JSON; client uses fetch via TanStack Query
-- **Step data persistence:** `workflowProgress.stepData` is a JSONB blob keyed by step number (e.g., `stepData["1"]` for School Context)
-- **AI integration:** Each step has its own chat history (`step_conversations` table) and optional system prompt override (`step_advisor_configs` table)
-
-### Common Tasks
-
-| Task | Command / Action |
-|------|-----------------|
-| Add a new model | Admin Settings → Airtable Sync, or Admin Import → Upload Excel |
-| Modify AI prompts | Admin Settings → Step Instructions tab |
-| Reset taxonomy/prompts | Admin Settings → "Restore All Defaults" button, or `npm run db:restore-defaults` |
-| Add new taxonomy items | `server/seed-taxonomy.ts` → add items → `npm run db:seed` |
-| Modify recommendation scoring | `server/recommendation-engine.ts` |
-| Add a new workflow step | Update `WORKFLOW_STEPS` in `shared/schema.ts`, add step prompt in `server/prompts.ts`, add panel in `Workflow.tsx` |
-
-### File Size Warning
-
-`client/src/pages/Workflow.tsx` is the largest file in the codebase (~2100 lines). It contains all step panels, the recommendation display, the decision frame, taxonomy selection, and the main layout. Consider splitting into separate component files if it grows further.
 
 ---
 
-*Generated: February 8, 2026*
+## Documentation Structure
+
+All product documentation lives in `docs/`:
+
+```
+docs/
+├── VISION.md                        # Product vision, principles, users
+├── ROADMAP.md                       # Sequenced epic list with status
+├── prds/
+│   ├── 01-workflow-v2-core.md       # V2 as primary experience
+│   ├── 02-school-context-path-selection.md
+│   ├── 03-document-upload-prefill.md
+│   ├── 04-recommendations-engine.md
+│   ├── 05-model-exploration-ai-chat.md
+│   ├── 06-auth-sessions.md
+│   └── 07-admin-knowledge-base.md
+└── backlog/
+    └── future-ideas.md              # Future items not yet in any PRD
+```
+
+Each PRD contains: **Overview**, **Requirements (Built)**, **Open Requirements**, **Out of Scope**.
+
+At the end of a work session, use the `update-prds` skill to update the relevant PRDs with decisions made and requirements completed.
+
+---
+
+## Known Issues & Decisions
+
+| Issue | Decision |
+|-------|---------|
+| V1 sessions exist in DB | Delete them; no migration needed. All new sessions use V2. |
+| `/ccl-v2/:sessionId` route | Unify to `/ccl/:sessionId` pointing to WorkflowV2 |
+| Path A step 0 before step 1 | Changing: upload moves to after School Context |
+| `experience_summary` not generated | Add to prefill route (server/routes.ts ~line 1065) |
+| Session progress shows "Step X of 8" for Path B | Fix `stepLabel()` in Sessions.tsx to account for designScope |
+| No mid-session path change | Intentional. Users delete session and start over. |
+| Resetting a session | Wipes everything including designScope. User re-picks path. |
+| Primary practice filter for Path B recs | Pending `primary_practice` DB column addition to models table |
+| Forgot password | Backlog — not currently implemented |
+| DB-configurable rules | Backlog — currently seeded from code |
+
+---
+
+*Previous handoff (Feb 8, 2026) is superseded by this document.*

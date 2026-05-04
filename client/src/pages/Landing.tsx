@@ -1,6 +1,9 @@
 import { Link } from "wouter";
-import { Sparkles, ArrowRight, Lock } from "lucide-react";
+import { ArrowRight, Lock } from "lucide-react";
 import { cn } from "@/lib/utils";
+import BrandHeader from "@/components/BrandHeader";
+import BrandFooter from "@/components/BrandFooter";
+import { useAuth } from "@/hooks/use-auth";
 
 const MODEL_TYPES = [
   {
@@ -31,26 +34,35 @@ const MODEL_TYPES = [
 ];
 
 export default function Landing() {
+  const { user, logout, isLoggingOut } = useAuth();
+
   return (
     <div className="min-h-screen bg-background flex flex-col">
-      {/* Header */}
-      <header className="border-b border-border bg-white">
-        <div className="max-w-5xl mx-auto px-6 py-5 flex items-center gap-3">
-          <div className="w-10 h-10 rounded-lg bg-primary flex items-center justify-center shadow-sm">
-            <Sparkles className="w-5 h-5 text-white" />
-          </div>
-          <div className="flex flex-col">
-            <span className="text-lg font-display font-bold text-primary tracking-tight">Transcend</span>
-            <span className="text-[10px] text-muted-foreground uppercase tracking-widest -mt-0.5">Model Recommendation Assistant</span>
-          </div>
-        </div>
-      </header>
+      <BrandHeader user={user} onLogout={logout} isLoggingOut={isLoggingOut} />
 
-      {/* Main content */}
-      <main className="flex-1 flex items-center justify-center px-6 py-16">
-        <div className="max-w-3xl w-full text-center">
-          <h1 className="text-3xl md:text-4xl font-display font-bold text-foreground mb-3">
-            What types of models and point solutions can I help you find today?
+      <main className="flex-1 flex items-center justify-center px-6 py-16 relative overflow-hidden">
+        {/* Decorative dashed swoop in the corner — Transcend marketing motif */}
+        <svg
+          aria-hidden="true"
+          className="absolute -top-10 -left-20 w-[420px] h-[260px] opacity-50 pointer-events-none"
+          viewBox="0 0 420 260"
+          fill="none"
+        >
+          <path
+            d="M0 220 C 80 80, 240 30, 420 80"
+            stroke="#5BC3B4"
+            strokeWidth="2"
+            strokeDasharray="5 6"
+            strokeLinecap="round"
+          />
+        </svg>
+
+        <div className="max-w-3xl w-full text-center relative z-10">
+          <p className="t-eyebrow mb-4">Find your fit</p>
+          <h1 className="t-display text-4xl md:text-5xl mb-5">
+            What types of models and point solutions
+            <br className="hidden md:block" />
+            <span className="text-primary"> can I help you find today?</span>
           </h1>
           <p className="text-base text-muted-foreground mb-12 max-w-xl mx-auto">
             Select a focus area to begin a guided process for identifying strong-fit school design models.
@@ -61,32 +73,44 @@ export default function Landing() {
               const inner = (
                 <div
                   className={cn(
-                    "relative rounded-xl border p-6 text-left transition-all",
+                    "relative rounded-xl border p-6 text-left transition-all bg-card",
                     type.available
-                      ? "border-border bg-card hover:border-primary/40 hover:shadow-lg cursor-pointer group"
+                      ? "border-border hover:border-primary/60 hover:shadow-lg cursor-pointer group"
                       : "border-border/60 bg-muted/30 opacity-60 cursor-not-allowed"
                   )}
                 >
                   {!type.available && (
                     <div className="absolute top-3 right-3">
-                      <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wider font-semibold text-muted-foreground bg-muted px-2 py-0.5 rounded-full">
+                      <span className="inline-flex items-center gap-1 text-[10px] font-display uppercase tracking-[0.14em] font-bold text-muted-foreground bg-muted px-2.5 py-1 rounded-full">
                         <Lock className="w-3 h-3" />
                         Coming Soon
                       </span>
                     </div>
                   )}
-                  <h2 className={cn(
-                    "text-lg font-display font-bold mb-2",
-                    type.available ? "text-foreground group-hover:text-primary transition-colors" : "text-muted-foreground"
-                  )}>
+
+                  {type.available && (
+                    <span
+                      aria-hidden="true"
+                      className="absolute top-0 left-6 right-6 h-[3px] bg-primary rounded-b transition-transform origin-left scale-x-0 group-hover:scale-x-100"
+                    />
+                  )}
+
+                  <h2
+                    className={cn(
+                      "font-display font-bold uppercase tracking-tight text-xl mb-3 leading-tight",
+                      type.available
+                        ? "text-foreground group-hover:text-primary transition-colors"
+                        : "text-muted-foreground"
+                    )}
+                  >
                     {type.title}
                   </h2>
                   <p className="text-sm text-muted-foreground leading-relaxed mb-4">
                     {type.description}
                   </p>
                   {type.available && (
-                    <div className="flex items-center gap-1.5 text-sm font-medium text-primary opacity-0 group-hover:opacity-100 transition-opacity">
-                      Get started <ArrowRight className="w-4 h-4" />
+                    <div className="flex items-center gap-1.5 text-[11px] font-display font-bold uppercase tracking-[0.16em] text-primary opacity-0 group-hover:opacity-100 transition-opacity">
+                      Get started <ArrowRight className="w-3.5 h-3.5" />
                     </div>
                   )}
                 </div>
@@ -99,19 +123,13 @@ export default function Landing() {
                   </Link>
                 );
               }
-
               return <div key={type.key}>{inner}</div>;
             })}
           </div>
         </div>
       </main>
 
-      {/* Footer */}
-      <footer className="border-t border-border py-4 text-center">
-        <p className="text-xs text-muted-foreground">
-          Powered by Transcend Education
-        </p>
-      </footer>
+      <BrandFooter />
     </div>
   );
 }

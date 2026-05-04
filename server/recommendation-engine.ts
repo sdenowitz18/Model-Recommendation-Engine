@@ -158,12 +158,23 @@ export async function generateRecommendations(sessionId: number): Promise<void> 
   const leapsSummary: string = step2.leaps_summary || "";
   const experienceSummary: string = step3.experience_summary || "";
 
-  // --- Grade bands (multi-select array or legacy single value) ---
-  const gradeBands: string[] = Array.isArray(step1.grade_bands)
+  // --- Grade bands ---
+  // Path B (specific experience): use granular targeted grades from experience definition
+  // if available (e.g. ["9","10"]), falling back to school-level grade bands.
+  const designScope: string | undefined = sd.designScope;
+  const experienceData = (sd.experience as Record<string, any>) || {};
+  const targetedGradeBands: string[] = Array.isArray(experienceData.targetedGradeBands)
+    ? experienceData.targetedGradeBands
+    : [];
+  const schoolGradeBands: string[] = Array.isArray(step1.grade_bands)
     ? step1.grade_bands
     : step1.grade_band
       ? [step1.grade_band]
       : [];
+  const gradeBands: string[] =
+    designScope === "specific_experience" && targetedGradeBands.length > 0
+      ? targetedGradeBands
+      : schoolGradeBands;
 
   // --- Step 4: System Elements ---
   const step4 = sd["4"] || {};
@@ -456,6 +467,14 @@ function gradeToNum(g: string): number | null {
 
 function gradeBandToGrades(band: string): Set<string> {
   const result = new Set<string>();
+
+  // Handle individual grade values (e.g. "9", "10") from Path B targetedGradeBands
+  const asNum = gradeToNum(band);
+  if (asNum !== null && !band.includes("-") && GRADE_BAND_RANGES[band] === undefined) {
+    result.add(String(asNum));
+    return result;
+  }
+
   const range = GRADE_BAND_RANGES[band];
   if (!range) {
     // Try old parseGradeRange as fallback

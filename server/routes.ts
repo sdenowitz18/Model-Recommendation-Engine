@@ -10,6 +10,7 @@ import { toFile } from "openai";
 import { getDefaultGlobalPrompt, getDefaultStepPrompts } from "./prompts";
 import { generateRecommendations } from "./recommendation-engine";
 import { extractFileContent } from "./file-parser";
+import { matchTaxonomyName, normalizeGradeBandToCanonical } from "./taxonomy-match";
 import { retrieveRelevantChunks, ingestKnowledgeBaseEntry, reindexAllKnowledgeBase } from "./embeddings";
 import { seedTaxonomy } from "./seed-taxonomy";
 import { api } from "@shared/routes";
@@ -696,8 +697,9 @@ The JSON object must have these exact keys:
         const webContentKey = `webContent_${selectedModel.id}`;
         let modelWebContent: string = step8Data[webContentKey] ?? "";
 
-        if (!modelWebContent && isGreeting) {
-          // Fire-and-forget for greetings
+        // Never await web research here — it can exceed the serverless timeout and
+        // block streaming. Prefetch + background fetch only; next message may use cache.
+        if (!modelWebContent) {
           fetchModelWebResearch(selectedModel.name, selectedModel.link)
             .then(async (content) => {
               if (!content) return;
@@ -710,14 +712,7 @@ The JSON object must have these exact keys:
                 await storage.updateWorkflowProgress(session.id, fp.currentStep, fp.stepsCompleted as number[], us);
               }
             })
-            .catch(err => console.warn("[Step 8 stream] Background web research failed:", err));
-        } else if (!modelWebContent) {
-          modelWebContent = await fetchModelWebResearch(selectedModel.name, selectedModel.link);
-          if (modelWebContent) {
-            const us = { ...(progress.stepData as Record<string, any>) };
-            us["8"] = { ...step8Data, [webContentKey]: modelWebContent };
-            await storage.updateWorkflowProgress(session.id, progress.currentStep, progress.stepsCompleted as number[], us);
-          }
+            .catch((err) => console.warn("[Step 8 stream] Background web research failed:", err));
         }
 
         if (modelWebContent) {
@@ -873,8 +868,24 @@ Use markdown formatting — headers and bullets for structured answers, prose fo
       if (!progress) return res.status(404).json({ message: "Workflow not found" });
 
       const completed = Array.from(new Set([...(progress.stepsCompleted as number[]), stepNumber]));
-      const nextStep = Math.min(stepNumber + 1, 8);
-      await storage.updateWorkflowProgress(session.id, nextStep, completed, progress.stepData as Record<string, any>);
+      const stepData = (progress.stepData as Record<string, any>) || {};
+      const designScope: string | undefined = stepData.designScope;
+
+      // Compute correct next step respecting the Outcomes → LEAPs (9) → Practices/SystemElements routing
+      let nextStep: number;
+      if (stepNumber === 2 && designScope === "whole_program") {
+        nextStep = 9; // Path A: Outcomes → LEAPs
+      } else if (stepNumber === 3 && designScope === "specific_experience") {
+        nextStep = 9; // Path B: Outcomes → LEAPs
+      } else if (stepNumber === 9 && designScope === "whole_program") {
+        nextStep = 3; // Path A: LEAPs → Practices
+      } else if (stepNumber === 9 && designScope === "specific_experience") {
+        nextStep = 4; // Path B: LEAPs → System Elements
+      } else {
+        nextStep = Math.min(stepNumber + 1, 8);
+      }
+
+      await storage.updateWorkflowProgress(session.id, nextStep, completed, stepData);
       res.json({ message: "Step confirmed", nextStep });
     } catch (err) {
       res.status(500).json({ message: "Failed to confirm step" });
@@ -1077,7 +1088,22 @@ Use markdown formatting — headers and bullets for structured answers, prose fo
         return res.json({ prefilled: { step1: {}, step2: { leaps: 0, outcomes: 0 }, step3: { practices: 0 } }, extracted: {} });
       }
 
-      const docContent = introDocs.map((d) => `--- ${d.fileName} ---\n${d.fileContent}`).join("\n\n");
+      let docContent = introDocs.map((d) => `--- ${d.fileName} ---\n${d.fileContent}`).join("\n\n");
+      // GPT-4o tokenizes roughly 3–4 chars per token. Keep the doc portion under
+      // ~20k tokens so the full request (system prompt + taxonomy lists + doc)
+      // stays well within a 30k TPM quota.
+      const MAX_PREFILL_DOC_CHARS = 60_000;
+      if (docContent.length > MAX_PREFILL_DOC_CHARS) {
+        docContent =
+          docContent.slice(0, MAX_PREFILL_DOC_CHARS) +
+          "\n\n[Document truncated for analysis — first ~60k characters sent.]";
+      }
+
+      // Resolve designScope/isPathB NOW so prompt construction uses the correct value
+      const progressEarly = await storage.getWorkflowProgress(session.id);
+      const earlyStepData = (progressEarly?.stepData as Record<string, any>) || {};
+      const designScope: string | undefined = earlyStepData.designScope;
+      const isPathB = designScope === "specific_experience";
 
       // Fetch taxonomy items and KB framework reference docs in parallel
       const [step2Taxonomy, step3Taxonomy, outcomesKB, practicesKB, leapsKB] = await Promise.all([
@@ -1097,19 +1123,88 @@ Use markdown formatting — headers and bullets for structured answers, prose fo
       const outcomesList = outcomeItems.map((i) => `- ${i.name}${i.description ? `: ${i.description}` : ""}`).join("\n");
       const practicesList = practiceItems.map((i) => `- ${i.name}${i.description ? `: ${i.description}` : ""}`).join("\n");
 
+      if (leapItems.length === 0 && outcomeItems.length === 0 && practiceItems.length === 0) {
+        console.warn("[prefill] Taxonomy is empty — cannot match LEAPs/outcomes/practices. Run DB seed or taxonomy import.");
+      } else {
+        console.log(
+          `[prefill] Taxonomy sizes: ${leapItems.length} LEAPs, ${outcomeItems.length} outcomes, ${practiceItems.length} practices`,
+        );
+      }
+
       // Append KB reference content if available
       const leapsKBContent = leapsKB.length > 0 ? `\n\nLEAPs Framework Reference:\n${leapsKB.map((e) => e.content).join("\n\n")}` : "";
       const outcomesKBContent = outcomesKB.length > 0 ? `\n\nLearning Outcomes Framework Reference:\n${outcomesKB.map((e) => e.content).join("\n\n")}` : "";
       const practicesKBContent = practicesKB.length > 0 ? `\n\nPractices & Activities Framework Reference:\n${practicesKB.map((e) => e.content).join("\n\n")}` : "";
 
-      const extractionPrompt = `You are analyzing school design documents to extract structured information for a school model recommendation workflow.
+      const pathBScope = isPathB
+        ? `\nIMPORTANT: These documents describe a SPECIFIC LEARNING EXPERIENCE (not the whole school program). Extract all information scoped to that specific experience — do not extract school-wide program goals unless they directly describe this experience.\n`
+        : "";
 
-You have access to the official taxonomy lists below. For leaps, outcomes, and practices, return ONLY exact names from those provided lists — do not invent new names. Match semantically: the document may use synonyms or describe something without naming it exactly.
+      const pathBOutputFields = isPathB ? `
+  "experience_name": "string or null — the name of this specific learning experience or program. For a Mentorship Blueprint: extract the experience name after 'BLUEPRINT & IMPLEMENTATION PLAN | ' in the title (e.g., 'MENTORSHIP' → 'Mentorship Program'). For a CCL Design Sketch: extract from the [EXPERIENCE] placeholder in the title or the program name in the intro paragraph. Return null if still a placeholder like '[EXPERIENCE]'.",
+  "experience_description": "string or null — 2-3 complete sentences describing what this experience is and what students do in it. For a Mentorship Blueprint: synthesize from the 'ABOUT THIS BLUEPRINT' section. For a CCL Design Sketch: synthesize from the intro paragraph. Write in plain prose — do NOT copy-paste raw text.",
+  "experience_grade_levels": "array of grade level strings — the grades this specific experience targets. Use 'K' for Kindergarten, single-digit strings for grades 1-9 (e.g. '9'), two-digit strings for grades 10-12 (e.g. '10'). Infer from explicit grade mentions or school type: 'High School' → ['9','10','11','12'], 'Middle School' → ['6','7','8'], 'Elementary' → ['K','1','2','3','4','5']. Return [] if not determinable.",
+  "primary_practice": "string or null — the single top-level practice type that best characterizes this experience (e.g. 'Mentorship', 'Work-Based Learning', 'Internship'). Must be an exact name from the AVAILABLE PRACTICES list, or null if unclear."` : "";
+
+      const extractionPrompt = `You are analyzing school design documents to extract structured information for a school model recommendation workflow.
+${pathBScope}
+## STEP 1: IDENTIFY DOCUMENT TYPE
+
+First, determine which of these document types this is by examining the title and structure:
+
+TYPE A — MENTORSHIP BLUEPRINT
+Identifiers: Title/header contains "BLUEPRINT & IMPLEMENTATION PLAN | [EXPERIENCE]" or similar Blueprint framing.
+Structure: Has "SECTION 1: STUDENT OUTCOMES" table with "How [Experience] Supports It" column, "SECTION 2: THE STUDENT EXPERIENCE" with numbered phase-by-phase activities, and "Supporting Elements" or "Support Elements" section with labeled system element paragraphs (Curriculum, Instruction & Assessment / Schedule & Use of Time / Adult Roles / Family & Community Partnerships / Budget, Operations & Technology).
+
+TYPE B — CCL EXPERIENCE COMPONENT SKETCH TEMPLATE
+Identifiers: Title/header contains "EXPERIENCE COMPONENT DESIGN SKETCH" or "DESIGN SKETCH".
+Structure: Has "STUDENT OUTCOMES" section with a table (Outcomes / Goals / How [Experience] Supports This columns), "SCHOOL ELEMENT HIGH LEVEL DESIGN DECISIONS" section, "ACTIVITIES & PRACTICES" section with phase tables, and "LeapsLEAPS" or "LEAPS / DESIGN PRINCIPLES" section listing LEAP headings with "Kids will say…" content.
+
+TYPE C — OTHER DOCUMENT
+Any other format. Apply general extraction heuristics.
+
+## STEP 2: DOCUMENT-TYPE-SPECIFIC EXTRACTION RULES
+
+### FOR TYPE A (Mentorship Blueprint):
+- OUTCOMES: Extract from "SECTION 1: STUDENT OUTCOMES" table — use the bold outcome names in the left column (e.g., "Relationship Skills", "Learning Strategies & Habits", "Professional Knowledge & Skills", "Social Capital"). Match to AVAILABLE OUTCOMES.
+- OUTCOMES_CONTEXT: For each matched outcome, use content from the "How Mentorship Supports It" column. Format: "• [Outcome Name] — [1-2 sentences from that column describing how this outcome is developed]". One bullet per outcome, separated by a blank line.
+- LEAPS: Look for "Learning Experience Design Principles", "Design Principles", or "Leaps" sections. If not explicit, infer from program philosophy. Match to AVAILABLE LEAPs.
+- LEAPS_CONTEXT: For each matched LEAP, describe how it shows up in the experience. Format: "• [LEAP Name] — [how this design principle manifests in this experience]".
+- PRACTICES: From "SECTION 2: THE STUDENT EXPERIENCE" — use the top-level experience type (e.g., "Mentorship") as primary practice, plus any specific activity types (goal-setting, structured reflection, professional rehearsal, near-peer mentoring) that match AVAILABLE PRACTICES.
+- PRACTICES_CONTEXT: Format: "• [Practice Name] — [how this practice is implemented or what students do]".
+- EXPERIENCE_SUMMARY: From "SECTION 2" phases and numbered activities. Format: "• [Phase Name] (e.g., Phase 1: Building the Foundation) — [what students do across activities in this phase]".
+- SYSTEM ELEMENTS — extract from "Supporting Elements" or labeled paragraphs:
+  - "Curriculum, Instruction & Assessment" paragraph → curriculum_context
+  - "Family & Community Partnerships" paragraph → family_context
+  - "Schedule & Use of Time" paragraph → scheduling_context
+  - "Adult Roles, Hiring & Learning" paragraph → adult_roles_context
+  - "Budget, Operations & Technology" paragraph → budget_context
+  - Write 2-4 prose sentences per field; include specific tool/program names (e.g., "The Compass Guide", "Qooper", "The Trail Log").
+
+### FOR TYPE B (CCL Experience Component Sketch Template):
+- OUTCOMES: Extract from "STUDENT OUTCOMES" section — the Outcomes column heading names. Match to AVAILABLE OUTCOMES.
+- OUTCOMES_CONTEXT: From "How [Experience] Supports This" column for each outcome. Format: "• [Outcome Name] — [content from that column]".
+- LEAPS: From "LeapsLEAPS" or "LEAPS / DESIGN PRINCIPLES" section — use the bold section headings: WHOLE CHILD → "Whole Child", COMMUNITY & CONNECTEDNESS → "Community & Connectedness", RELEVANCE → "Relevance", HIGH EXPECTATIONS & RIGOROUS LEARNING → "High Expectations & Rigorous Learning", AGENCY → "Agency", CUSTOMIZATION → "Customization". Match to AVAILABLE LEAPs.
+- LEAPS_CONTEXT: From the "Kids will say…" content for each LEAP. Format: "• [LEAP Name] — [what students say / how this design principle shows up]".
+- PRACTICES: From "ACTIVITIES & PRACTICES" section — the Activity/Practice names under each phase header. Match to AVAILABLE PRACTICES.
+- PRACTICES_CONTEXT: From phase descriptions and "What the Student Does" column content. Format: "• [Practice/Activity Name] — [what students do]".
+- EXPERIENCE_SUMMARY: From "ACTIVITIES & PRACTICES" section — one bullet per phase. Format: "• [Phase/Component Name] — [what students do in this phase]".
+- SYSTEM ELEMENTS — from "SCHOOL ELEMENT HIGH LEVEL DESIGN DECISIONS" (priority) and "SCHOOL ELEMENT DESIGN DETAILS" sections. Same field mapping as Type A. Only extract if actual content was filled in — if "[Type here]" placeholders are empty, return null for that field.
+
+### FOR TYPE C (Other Documents):
+- OUTCOMES: Look for sections labeled "outcomes", "goals", "graduate aims", "KSMs", "grad aims", "knowledge skills and mindsets", or "what students will". Match to AVAILABLE OUTCOMES.
+- LEAPS: Look for "design principles", "learning principles", "LEAPs", "theory of learning", or "what must be true for all students". Match to AVAILABLE LEAPs.
+- PRACTICES: Look for "activities", "practices", "student experience", "program components", "what students do", or "learning experiences". Match to AVAILABLE PRACTICES.
+- SYSTEM ELEMENTS: Look for curriculum, staffing, scheduling, family engagement, technology, or budget sections. Extract paragraph-level context. Err on the side of extracting rather than omitting.
+
+## STEP 3: TAXONOMY MATCHING
+
+For leaps, outcomes, and practices, return ONLY exact names from the lists below — do not invent new names. Match semantically — the document may use synonyms or describe something without naming it exactly.
 
 Synonym awareness:
-- "Outcomes" may also be called "Grad Aims", "Graduate Profile", "Knowledge, Skills, and Mindsets", or "KSMs"
-- "Practices" may also be called "activities", "components", "learning experiences", or "program elements"
-- "LEAPs" may also be called "design principles", "learning principles", or "extraordinary learning"
+- "Outcomes" ↔ "Grad Aims", "Graduate Profile", "Knowledge, Skills, and Mindsets", "KSMs", "graduate profile"
+- "Practices" ↔ "activities", "components", "learning experiences", "program elements"
+- "LEAPs" ↔ "design principles", "learning principles", "extraordinary learning", "theory of learning"
 
 === AVAILABLE LEAPs ===
 ${leapsList}${leapsKBContent}
@@ -1120,21 +1215,46 @@ ${outcomesList}${outcomesKBContent}
 === AVAILABLE PRACTICES ===
 ${practicesList}${practicesKBContent}
 
-Return ONLY this JSON structure (no other text):
-{
-  "school_name": "string or null",
-  "state": "string or null — full US state name, e.g. 'Texas'",
-  "grade_band": "K-5" | "6-8" | "9-12" | "K-8" | "K-12" | "6-12" | "PK-5" | "PK-12" | null,
-  "community_context": "string or null — synthesized paragraph covering: student demographics and backgrounds, community needs, policy/mandate context, industry/employer partnerships, post-secondary relationships, and any unique context mentioned in the documents",
-  "leaps": ["exact names from the AVAILABLE LEAPs list that are explicitly mentioned or clearly described in the documents"],
-  "outcomes": ["exact names from the AVAILABLE OUTCOMES list — also check for Grad Aims / KSMs / graduate profile content"],
-  "practices": ["exact names from the AVAILABLE PRACTICES list — also check for activities, components, learning experiences"],
-  "leaps_context": "string or null — synthesize what the document says specifically about the matched LEAPs/design principles: how they show up, why they matter, what they look like in practice",
-  "outcomes_context": "string or null — synthesize what the document says about the matched outcomes: goals, rationale, student populations, how they are developed",
-  "practices_context": "string or null — synthesize what the document says about the matched practices/activities/components: how they are implemented, their purpose, any specifics mentioned"
-}
+## STEP 4: OUTPUT FORMATTING RULES
 
-Grade band mapping: "Elementary" → "K-5", "Middle School" → "6-8", "High School" → "9-12". Use null if ambiguous.`;
+All context fields must be immediately readable in a text box — write for a human reader, not as a data dump.
+
+CONTEXT FIELDS (outcomes_context, leaps_context, practices_context):
+Format as bullet list, one item per matched taxonomy item:
+• [Name] — [1-2 sentences from the document about how this item shows up or why it matters]
+
+[blank line between bullets]
+
+EXPERIENCE_SUMMARY: One bullet per phase or component:
+• [Phase/Component Name] — [what students do]
+
+SYSTEM ELEMENT FIELDS (curriculum_context, family_context, etc.):
+Write 2-4 readable prose sentences. Include specific tool/program names. Synthesize — do not copy-paste.
+
+EXPERIENCE_DESCRIPTION: 2-3 complete sentences. State what the program IS, what students DO in it, and what development it aims for.
+
+## STEP 5: RETURN THIS JSON STRUCTURE (no other text)
+
+{
+  "document_type": "mentorship_blueprint" | "ccl_design_sketch" | "other",
+  "school_name": "string or null",
+  "state": "string or null — full US state name",
+  "grade_band": "K-5" | "6-8" | "9-12" | "K-8" | "K-12" | "6-12" | "PK-5" | "PK-12" | "Post-secondary" | null,
+  "community_context": "string or null — synthesized paragraph: student demographics, community needs, policy context, employer/post-secondary partnerships",
+  "outcomes": ["exact names from AVAILABLE OUTCOMES list"],
+  "leaps": ["exact names from AVAILABLE LEAPs list"],
+  "practices": ["exact names from AVAILABLE PRACTICES list"],
+  "outcomes_context": "string or null — bullet-formatted, one line per outcome: '• Name — context'",
+  "leaps_context": "string or null — bullet-formatted, one line per LEAP: '• Name — context'",
+  "practices_context": "string or null — bullet-formatted, one line per practice: '• Name — context'",
+  "experience_summary": "string or null — bullet-formatted: '• Phase/Activity — what students do'",
+  "curriculum_context": "string or null — 2-4 prose sentences about curriculum, instruction, and assessment",
+  "family_context": "string or null — 2-4 prose sentences about family engagement and community partnerships",
+  "scheduling_context": "string or null — 2-4 prose sentences about scheduling and use of time",
+  "technology_context": "string or null — 2-4 prose sentences about technology tools and platforms",
+  "adult_roles_context": "string or null — 2-4 prose sentences about staffing, roles, and adult learning",
+  "budget_context": "string or null — 2-4 prose sentences about funding, operations, and budget"${pathBOutputFields ? `,\n${pathBOutputFields}` : ""}
+}`;
 
       const completion = await openai.chat.completions.create({
         model: "gpt-4o",
@@ -1148,12 +1268,6 @@ Grade band mapping: "Elementary" → "K-5", "Middle School" → "6-8", "High Sch
 
       const extracted = JSON.parse(completion.choices[0].message.content || "{}");
 
-      // Exact name lookup (case-insensitive) — GPT-4o returns exact taxonomy names
-      const exactFind = (name: string, items: typeof step2Taxonomy) => {
-        const n = name.toLowerCase().trim();
-        return items.find((item) => item.name.toLowerCase() === n);
-      };
-
       type TaxonomySelection = { id: number; name: string; importance: "most_important" | "important" | "nice_to_have" };
 
       const matchedLeaps: TaxonomySelection[] = [];
@@ -1161,35 +1275,44 @@ Grade band mapping: "Elementary" → "K-5", "Middle School" → "6-8", "High Sch
       const matchedPractices: TaxonomySelection[] = [];
 
       for (const name of (extracted.leaps || []) as string[]) {
-        const m = exactFind(name, leapItems);
+        const m = matchTaxonomyName(name, leapItems);
         if (m && !matchedLeaps.find((x) => x.id === m.id)) {
           matchedLeaps.push({ id: m.id, name: m.name, importance: "important" });
         }
       }
       for (const name of (extracted.outcomes || []) as string[]) {
-        const m = exactFind(name, outcomeItems);
+        const m = matchTaxonomyName(name, outcomeItems);
         if (m && !matchedOutcomes.find((x) => x.id === m.id)) {
           matchedOutcomes.push({ id: m.id, name: m.name, importance: "important" });
         }
       }
       for (const name of (extracted.practices || []) as string[]) {
-        const m = exactFind(name, practiceItems);
+        const m = matchTaxonomyName(name, practiceItems);
         if (m && !matchedPractices.find((x) => x.id === m.id)) {
           matchedPractices.push({ id: m.id, name: m.name, importance: "important" });
         }
       }
 
+      console.log(
+        `[prefill] Matched: ${matchedLeaps.length} LEAPs, ${matchedOutcomes.length} outcomes, ${matchedPractices.length} practices`,
+      );
+
+      // Re-fetch progress for a fresh write (progressEarly was read-only for prompt construction)
       const progress = await storage.getWorkflowProgress(session.id);
       if (!progress) return res.status(404).json({ message: "Workflow not found" });
 
       const allStepData = { ...(progress.stepData as Record<string, any>) };
+      // isPathB / designScope already defined above from progressEarly — they are the same session
       const existingStep1 = allStepData["1"] || {};
 
       // Step 1 — school context (guard against overwriting values already set at workflow creation)
       const step1Patch: Record<string, any> = {};
       if (extracted.school_name && !(existingStep1.school_name || session.name)) step1Patch.school_name = extracted.school_name;
       if (extracted.state && !existingStep1.state) step1Patch.state = extracted.state;
-      if (extracted.grade_band && !existingStep1.grade_band) step1Patch.grade_band = extracted.grade_band;
+      const canonicalGrade = normalizeGradeBandToCanonical(extracted.grade_band);
+      const hasGrade =
+        !!(existingStep1.grade_band || (Array.isArray(existingStep1.grade_bands) && existingStep1.grade_bands.length > 0));
+      if (canonicalGrade && !hasGrade) step1Patch.grade_band = canonicalGrade;
       if (extracted.community_context && !existingStep1.context) step1Patch.context = extracted.community_context;
       if (Object.keys(step1Patch).length > 0) {
         allStepData["1"] = { ...existingStep1, ...step1Patch };
@@ -1215,8 +1338,73 @@ Grade band mapping: "Elementary" → "K-5", "Middle School" → "6-8", "High Sch
         step3Patch.selected_practices = matchedPractices;
         step3Patch.practices_summary = extracted.practices_context || "Pre-filled from uploaded documents. Review and adjust as needed.";
       }
+      if (extracted.experience_summary) {
+        step3Patch.experience_summary = extracted.experience_summary;
+      }
       if (Object.keys(step3Patch).length > 0) {
         allStepData["3"] = { ...(allStepData["3"] || {}), ...step3Patch };
+      }
+
+      // Step 4 — system elements context (guard: only write if not already set by user)
+      const sysElementFields: Array<{ key: string; contextKey: string }> = [
+        { key: "curriculum",  contextKey: "curriculum_context" },
+        { key: "family",      contextKey: "family_context" },
+        { key: "scheduling",  contextKey: "scheduling_context" },
+        { key: "technology",  contextKey: "technology_context" },
+        { key: "adult_roles", contextKey: "adult_roles_context" },
+        { key: "budget",      contextKey: "budget_context" },
+      ];
+      const existingStep4 = allStepData["4"] || {};
+      const step4Patch: Record<string, any> = {};
+      for (const { contextKey } of sysElementFields) {
+        const extractedValue = extracted[contextKey];
+        if (extractedValue && !existingStep4[contextKey]) {
+          step4Patch[contextKey] = extractedValue;
+        }
+      }
+      if (Object.keys(step4Patch).length > 0) {
+        allStepData["4"] = { ...existingStep4, ...step4Patch };
+        console.log(`[prefill] System elements prefilled: ${Object.keys(step4Patch).join(", ")}`);
+      }
+
+      // Path B — experience definition prefill (name, description, grade levels, primary practice)
+      if (isPathB) {
+        const existingExperience = allStepData.experience || {};
+        const expPatch: Record<string, any> = {};
+
+        // Experience name — only write if not already set
+        if (extracted.experience_name && !existingExperience.name) {
+          expPatch.name = extracted.experience_name;
+        }
+        // Experience description — only write if not already set
+        if (extracted.experience_description && !existingExperience.description) {
+          expPatch.description = extracted.experience_description;
+        }
+        // Targeted grade levels — only write if not already set
+        if (
+          Array.isArray(extracted.experience_grade_levels) &&
+          extracted.experience_grade_levels.length > 0 &&
+          (!existingExperience.targetedGradeBands || existingExperience.targetedGradeBands.length === 0)
+        ) {
+          expPatch.targetedGradeBands = extracted.experience_grade_levels;
+        }
+
+        // Primary practice suggestion
+        if (extracted.primary_practice) {
+          const primaryMatch = matchTaxonomyName(extracted.primary_practice, practiceItems);
+          if (primaryMatch) {
+            const existingPrimary: any[] = existingExperience.primaryPractices || [];
+            if (!existingPrimary.find((p: any) => p.id === primaryMatch.id)) {
+              expPatch.primaryPractices = [{ id: primaryMatch.id, name: primaryMatch.name, importance: "most_important" as const }];
+              console.log(`[prefill] Path B primary practice suggestion: ${primaryMatch.name}`);
+            }
+          }
+        }
+
+        if (Object.keys(expPatch).length > 0) {
+          allStepData.experience = { ...existingExperience, ...expPatch };
+          console.log(`[prefill] Path B experience prefilled: ${Object.keys(expPatch).join(", ")}`);
+        }
       }
 
       await storage.updateWorkflowProgress(

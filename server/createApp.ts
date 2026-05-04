@@ -44,13 +44,38 @@ export function createApp(opts: { serveStaticFiles?: boolean } = {}) {
   app.use(express.urlencoded({ extended: false }));
 
   const PgSession = connectPgSimple(session);
+  const pgStore = new PgSession({
+    conString: process.env.DATABASE_URL,
+    tableName: "user_sessions",
+    createTableIfMissing: true,
+  });
+
+  // Wrap the PG store so that DB errors (e.g. ENOTFOUND at startup) are logged
+  // but never propagated to express-session as fatal errors. Without this, every
+  // single HTTP request — including frontend SPA routes — returns 500.
+  const safeStore = new session.MemoryStore();
+  const origGet = pgStore.get.bind(pgStore);
+  const origSet = pgStore.set.bind(pgStore);
+  const origDestroy = pgStore.destroy.bind(pgStore);
+  safeStore.get = (sid, cb) =>
+    origGet(sid, (err, session) => {
+      if (err) { console.warn("[session-store] get error:", err.message); return cb(null, null); }
+      cb(null, session);
+    });
+  safeStore.set = (sid, session, cb) =>
+    origSet(sid, session, (err) => {
+      if (err) console.warn("[session-store] set error:", err.message);
+      cb?.();
+    });
+  safeStore.destroy = (sid, cb) =>
+    origDestroy(sid, (err) => {
+      if (err) console.warn("[session-store] destroy error:", err.message);
+      cb?.();
+    });
+
   app.use(
     session({
-      store: new PgSession({
-        conString: process.env.DATABASE_URL,
-        tableName: "user_sessions",
-        createTableIfMissing: true,
-      }),
+      store: safeStore,
       secret: process.env.SESSION_SECRET || "dev-secret-change-in-production",
       resave: false,
       saveUninitialized: false,

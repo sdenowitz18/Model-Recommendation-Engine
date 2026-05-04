@@ -1,4 +1,3 @@
-import os from "os";
 import * as xlsx from "xlsx";
 import { parseOffice } from "officeparser";
 
@@ -11,30 +10,45 @@ export async function extractFileContent(
   fileName: string,
   mimeType: string,
 ): Promise<string> {
-  // Office documents (PowerPoint, Word) and PDFs via officeparser.
+  const isPdf = mimeType === "application/pdf" || fileName.endsWith(".pdf");
+
+  // PDFs — use pdf-parse (v2 API). officeparser is unreliable for PDFs and its
+  // failure fallback was reading binary as UTF-8, producing garbled text.
+  if (isPdf) {
+    try {
+      const { PDFParse } = await import("pdf-parse");
+      const parser = new PDFParse({ data: buffer });
+      try {
+        const result = await parser.getText();
+        const text = (result.text ?? "").trim();
+        return text || "[PDF uploaded — no text content could be extracted.]";
+      } finally {
+        await parser.destroy().catch(() => {});
+      }
+    } catch (e) {
+      console.error("pdf-parse error:", e);
+      return "[PDF uploaded — text could not be extracted automatically.]";
+    }
+  }
+
+  // Office documents (PowerPoint, Word) via officeparser.
   // tempFilesLocation must point to /tmp — Vercel's serverless filesystem is
   // read-only everywhere except /tmp.
   if (
     mimeType.includes("presentation") || mimeType.includes("powerpoint") ||
     fileName.endsWith(".pptx") || fileName.endsWith(".ppt") ||
     mimeType.includes("msword") || mimeType.includes("wordprocessingml") ||
-    fileName.endsWith(".doc") || fileName.endsWith(".docx") ||
-    mimeType === "application/pdf" || fileName.endsWith(".pdf")
+    fileName.endsWith(".doc") || fileName.endsWith(".docx")
   ) {
     try {
-      const result = await parseOffice(buffer, { tempFilesLocation: os.tmpdir() });
+      const result = await parseOffice(buffer, { outputErrorToConsole: false });
       if (result && typeof result === "object" && "toText" in result && typeof (result as any).toText === "function") {
         return (result as any).toText();
       }
       return typeof result === "string" ? result : String(result);
     } catch (e) {
       console.error("officeparser error:", e);
-      // Attempt a plain-text read and strip null bytes so PostgreSQL TEXT
-      // columns don't reject the insert (binary PDFs contain NUL characters).
-      const raw = buffer.toString("utf-8").replace(/\0/g, "");
-      // If the result looks like printable text (not binary noise), use it.
-      const printable = raw.replace(/[^\x09\x0A\x0D\x20-\x7E\u00A0-\uFFFF]/g, "");
-      return printable.trim() || "[Document uploaded — text could not be extracted automatically.]";
+      return "[Document uploaded — text could not be extracted automatically.]";
     }
   }
 

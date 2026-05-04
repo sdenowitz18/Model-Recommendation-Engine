@@ -30,6 +30,7 @@ export interface SessionSummary {
   schoolName: string | null;
   district: string | null;
   gradeBand: string | null;
+  designScope: "whole_program" | "specific_experience" | null;
 }
 
 export interface IStorage {
@@ -247,6 +248,7 @@ export class DatabaseStorage implements IStorage {
         schoolName: step1.school_name ?? null,
         district: step1.district ?? null,
         gradeBand: step1.grade_band ?? null,
+        designScope: (stepData.designScope as "whole_program" | "specific_experience") ?? null,
       });
     }
     return results;

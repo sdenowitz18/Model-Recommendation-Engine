@@ -1,8 +1,9 @@
 import { useState } from "react";
 import { useLocation } from "wouter";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Sparkles, Eye, EyeOff } from "lucide-react";
+import { Eye, EyeOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import logoUrl from "@/assets/transcend-logo.svg";
 
 type Mode = "login" | "register";
 
@@ -49,25 +50,39 @@ export default function Login() {
   };
 
   return (
-    <div className="min-h-screen bg-background flex flex-col items-center justify-center px-4">
-      <div className="w-full max-w-sm">
+    <div className="min-h-screen bg-background flex flex-col items-center justify-center px-4 relative overflow-hidden">
+      {/* dashed swoop motif behind the card */}
+      <svg
+        aria-hidden="true"
+        className="absolute top-1/4 -right-32 w-[520px] h-[360px] opacity-50 pointer-events-none"
+        viewBox="0 0 520 360"
+        fill="none"
+      >
+        <path
+          d="M0 60 C 200 280, 400 340, 520 240"
+          stroke="#5BC3B4"
+          strokeWidth="2"
+          strokeDasharray="5 6"
+          strokeLinecap="round"
+        />
+      </svg>
+
+      <div className="w-full max-w-sm relative z-10">
         {/* Logo */}
-        <div className="flex items-center gap-3 justify-center mb-10">
-          <div className="w-10 h-10 rounded-lg bg-primary flex items-center justify-center shadow-sm">
-            <Sparkles className="w-5 h-5 text-white" />
-          </div>
-          <div className="flex flex-col">
-            <span className="text-lg font-display font-bold text-primary tracking-tight">Transcend</span>
-            <span className="text-[10px] text-muted-foreground uppercase tracking-widest -mt-0.5">Model Recommendation Assistant</span>
-          </div>
+        <div className="flex flex-col items-center mb-10">
+          <img src={logoUrl} alt="Transcend" className="h-10 w-auto mb-3 select-none" draggable={false} />
+          <span className="text-[10px] font-display font-bold uppercase tracking-[0.22em] text-muted-foreground">
+            Model Recommendation Assistant
+          </span>
         </div>
 
         <div className="bg-white border rounded-xl shadow-sm p-8">
           <div className="mb-6 text-center">
-            <h1 className="text-xl font-semibold text-foreground">
+            <p className="t-eyebrow mb-2">{mode === "login" ? "Welcome back" : "Get started"}</p>
+            <h1 className="font-display font-bold uppercase tracking-tight text-2xl text-foreground">
               {mode === "login" ? "Sign in" : "Create account"}
             </h1>
-            <p className="text-sm text-muted-foreground mt-1">
+            <p className="text-sm text-muted-foreground mt-2">
               {mode === "login"
                 ? "Sign in to access your questionnaires."
                 : "Create an account to get started."}
@@ -76,7 +91,7 @@ export default function Login() {
 
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
-              <label className="text-xs font-medium text-foreground block mb-1.5">
+              <label className="text-[11px] font-display font-bold uppercase tracking-[0.14em] text-foreground block mb-1.5">
                 Email address
               </label>
               <input
@@ -91,7 +106,7 @@ export default function Login() {
             </div>
 
             <div>
-              <label className="text-xs font-medium text-foreground block mb-1.5">
+              <label className="text-[11px] font-display font-bold uppercase tracking-[0.14em] text-foreground block mb-1.5">
                 Password
               </label>
               <div className="relative">
@@ -120,7 +135,7 @@ export default function Login() {
 
             <Button
               type="submit"
-              className="w-full"
+              className="w-full uppercase tracking-[0.12em] font-display font-bold text-xs"
               disabled={!email.trim() || !password || authMutation.isPending}
             >
               {authMutation.isPending
@@ -137,7 +152,7 @@ export default function Login() {
             <button
               type="button"
               onClick={switchMode}
-              className="text-xs font-medium text-primary hover:underline"
+              className="text-xs font-display font-bold uppercase tracking-[0.1em] text-primary hover:underline"
             >
               {mode === "login" ? "Create one" : "Sign in"}
             </button>
