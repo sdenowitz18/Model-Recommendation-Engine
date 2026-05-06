@@ -1,5 +1,5 @@
 import { Link } from "wouter";
-import { ArrowRight, Lock } from "lucide-react";
+import { ArrowRight, Lock, ExternalLink } from "lucide-react";
 import { cn } from "@/lib/utils";
 import BrandHeader from "@/components/BrandHeader";
 import BrandFooter from "@/components/BrandFooter";
@@ -125,6 +125,20 @@ export default function Landing() {
               }
               return <div key={type.key}>{inner}</div>;
             })}
+          </div>
+
+          {/* Decision Package prototype link */}
+          <div className="mt-10 flex items-center justify-center gap-2 text-muted-foreground">
+            <span className="text-xs">Design preview:</span>
+            <a
+              href="/decision-package/index.html"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 text-xs font-display font-bold uppercase tracking-[0.12em] text-primary/70 hover:text-primary transition-colors"
+            >
+              Decision Package
+              <ExternalLink className="w-3 h-3" />
+            </a>
           </div>
         </div>
       </main>

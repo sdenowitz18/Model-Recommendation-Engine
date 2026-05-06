@@ -337,11 +337,12 @@ Suspend the global "non-directive" and "facilitation-oriented" instructions for 
 
 YOUR ROLE:
 You are an expert on the model being explored. Your knowledge comes from:
-1. === MODEL RESEARCH SUMMARY === — a detailed AI-generated research summary about this model; draw from this first for how the model actually works, its evidence base, implementation, and real-world examples
-2. === MODEL BEING EXPLORED === — the structured profile from our database; use for quick facts
-3. === SCHOOL DESIGN DOCUMENTS === — the school's own uploaded documents; reference these explicitly when making comparisons
-4. === PRIOR STEPS SUMMARY === — the school's full decision frame; use to assess fit and surface tensions
-5. Your own training knowledge — you may supplement the above with what you know about this model from your training data, especially for questions not covered in the provided materials. When drawing from training knowledge rather than the provided context, you don't need to flag it — just answer confidently and accurately.
+1. === VETTED ALIGNMENT DATA === — the authoritative, curated alignment assessment from our database. This is ground truth for what this model does and doesn't align to.
+2. === MODEL ENRICHMENT DATA === — detailed information collected from the model's website and publications. Rich supplementary context, but NOT vetted — see ALIGNMENT SOURCE HIERARCHY below.
+3. === MODEL BEING EXPLORED === — the structured profile from our database; use for quick facts
+4. === SCHOOL DESIGN DOCUMENTS === — the school's own uploaded documents; reference these explicitly when making comparisons
+5. === PRIOR STEPS SUMMARY === — the school's full decision frame; use to assess fit and surface tensions
+6. Your own training knowledge — you may supplement the above with what you know about this model from your training data, especially for questions not covered in the provided materials. When drawing from training knowledge rather than the provided context, you don't need to flag it — just answer confidently and accurately.
 
 Your job is to help this school team honestly evaluate whether this model is right for their school — not to sell it, but to give them a clear-eyed, grounded picture.
 
@@ -354,6 +355,19 @@ ANSWERING QUESTIONS:
 - For implementation questions: ground answers in the web research + the school's stated constraints from Step 4
 - For fit questions: reference specific aims, practices, and preferences from the school's decision frame
 - Be specific, not generic: "This model's [specific practice] aligns with your stated emphasis on [specific thing from their docs]" — not "this model has strong practices"
+
+ALIGNMENT SOURCE HIERARCHY (CRITICAL):
+You have two sources of alignment information. You MUST distinguish between them:
+
+1. **Confirmed Alignment** (from === VETTED ALIGNMENT DATA ===): This is the authoritative, vetted assessment from our curated database. When this data says a practice, outcome, or LEAP is matched, speak confidently. When it says something is NOT matched, treat that as the ground truth.
+
+2. **Potential Alignment** (from enrichment data or web research): Enrichment data is collected from the model's website and publications. It may suggest the model touches on practices, outcomes, or LEAPs that are NOT confirmed in the vetted data. This is useful supplementary information, but it has NOT been validated.
+
+Rules for using these sources:
+- For items CONFIRMED as matched in the vetted data: speak confidently about alignment. Use enrichment/web research to explain HOW the model delivers on it.
+- For items NOT matched in the vetted data but mentioned in enrichment: frame as "Potential Alignment" — the model's published materials suggest it may address this, but it hasn't been confirmed in our vetted assessment. Provide the enrichment detail so the user can evaluate for themselves.
+- NEVER present enrichment-only alignment with the same confidence as vetted alignment. The distinction matters.
+- If a user asks why there's a discrepancy between scores and what you're describing: explain that alignment scores are based on our vetted model database, which is the authoritative source. Published materials can suggest broader alignment that hasn't been formally validated yet.
 
 KNOWLEDGE LIMITS — BE HONEST:
 - If something isn't covered in the model profile or web research, say so: "I don't have reliable information on that — I'd recommend checking [model website] or contacting the provider directly."
@@ -394,4 +408,219 @@ OUTPUT: A Recommendations Table with columns:
 - Evidence & Resources: Proof points, example schools, or links
 - Potential Complements (optional): Other models that could round out gaps`,
   };
+}
+
+/**
+ * Formats alignment/recommendation data into a readable context block
+ * for the Step 8 chat. This is the "vetted, authoritative" data source.
+ */
+export function formatAlignmentContext(alignment: Record<string, any> | null): string {
+  if (!alignment) return "";
+
+  const sections: string[] = [];
+
+  const formatScore = (score: any, dimension: string): string => {
+    if (!score) return "";
+    const lines: string[] = [];
+    lines.push(`**${dimension}**: ${score.pct ?? 0}% match (${score.label ?? "None"}) — ${score.earned ?? 0}/${score.max ?? 0} points`);
+    lines.push(`The school selected ${(score.matches || []).length} items. You MUST address ALL of them:`);
+
+    for (const m of (score.matches || [])) {
+      const status = m.matched ? "CONFIRMED MATCH" : "NOT MATCHED";
+      lines.push(`  - ${m.name} [${status}] (importance: ${m.importance})`);
+    }
+    return lines.join("\n");
+  };
+
+  sections.push(formatScore(alignment.outcomesScore, "Outcomes"));
+  sections.push(formatScore(alignment.leapsScore, "LEAPs"));
+  sections.push(formatScore(alignment.practicesScore, "Practices"));
+
+  const flags = alignment.constraintFlags || [];
+  if (flags.length > 0) {
+    sections.push(`**Watchouts**: ${flags.map((f: any) => `${f.domain} — ${f.detail}`).join("; ")}`);
+  } else {
+    sections.push("**Watchouts**: None flagged");
+  }
+
+  if (alignment.gradeBandDetail) {
+    sections.push(`**Grade Band**: ${alignment.gradeBandDetail}`);
+  }
+
+  return sections.filter(Boolean).join("\n");
+}
+
+/**
+ * Maps a topic string to the KB referenceType(s) to retrieve deterministically.
+ * Returns null if the topic should fall back to embedding-based RAG.
+ */
+export function getTopicReferenceTypes(topic: string | undefined): string[] | null {
+  if (!topic) return null;
+  if (topic === "model:executive_summary" || topic === "alignment:overall") {
+    return ["outcomes", "leaps", "practices"];
+  }
+  if (topic === "model:outcomes" || topic === "alignment:outcomes") return ["outcomes"];
+  if (topic === "model:leaps" || topic === "alignment:leaps") return ["leaps"];
+  if (topic === "model:practices" || topic === "alignment:practices") return ["practices"];
+  if (topic.startsWith("watchout:")) return ["system_elements"];
+  return null;
+}
+
+/**
+ * Returns a topic-specific instruction block appended to the Step 8 system prompt.
+ * Includes the relevant user freeform context for the topic.
+ */
+export function getTopicPromptAddendum(
+  topic: string | undefined,
+  stepData: Record<string, any>,
+): string {
+  if (!topic) return "";
+
+  const s2 = stepData["2"] || {};
+  const s3 = stepData["3"] || {};
+
+  switch (topic) {
+    case "model:executive_summary":
+      return `
+=== TOPIC: EXECUTIVE SUMMARY ===
+Generate a structured executive summary of this model in this exact format:
+1. **What This Model Is** — 2–3 sentence plain-language description
+2. **Who It's For** — Grade bands, school types, and contexts where it thrives
+3. **Core Approach** — The 3–4 defining practices or pedagogical elements
+4. **Evidence Base** — What research or outcomes data exists; strength of evidence
+5. **Implementation Snapshot** — What adoption looks like (timeline, PD, cost if known)
+6. **Your Fit at a Glance** — 2–3 sentence summary of how this model maps to this school's decision frame, drawn from alignment data
+
+Use the model profile, web research, and school context to complete each section. Be specific and factual.`;
+
+    case "model:outcomes":
+      return `
+=== TOPIC: MODEL OVERVIEW — OUTCOMES ===
+Describe what outcomes this model targets and how it delivers on them. Use the CCL Outcomes reference document provided to give full definitions, not just names. Explain how the model's approach produces these outcomes in practice.
+${s2.outcomes_summary ? `\nThe school's outcomes context: ${s2.outcomes_summary}` : ""}`;
+
+    case "model:leaps":
+      return `
+=== TOPIC: MODEL OVERVIEW — LEAPs ===
+Describe how this model embodies specific LEAPs (Leaps for Extraordinary Learning). Use the LEAPs reference document provided for full definitions and "what this can mean" detail. Explain which LEAPs this model most strongly represents and how.
+${s2.leaps_summary ? `\nThe school's LEAPs context: ${s2.leaps_summary}` : ""}`;
+
+    case "model:practices":
+      return `
+=== TOPIC: MODEL OVERVIEW — PRACTICES ===
+Describe this model's core instructional practices. Use the Practices reference document provided for full definitions of each practice category and activity type. Explain what the day-to-day learning experience looks like.
+${s3.practices_summary ? `\nThe school's practices context: ${s3.practices_summary}` : ""}
+${s3.experience_summary ? `\nThe school's learning experience context: ${s3.experience_summary}` : ""}`;
+
+    case "alignment:overall":
+      return `
+=== TOPIC: OVERALL ALIGNMENT ===
+Synthesize alignment across all three dimensions: outcomes, LEAPs, and practices.
+
+Start with the VETTED ALIGNMENT DATA — present confirmed matches with confidence and call out significant gaps, especially on "Must Have" items. Then, if enrichment data suggests alignment on items NOT confirmed in the vetted data, present those separately under a "Potential Alignment" heading with appropriate framing (e.g., "Based on the model's published materials, it may also address..."). Do not blend the two — keep confirmed and potential alignment clearly separated.
+${s2.outcomes_summary ? `\nSchool's outcomes context: ${s2.outcomes_summary}` : ""}
+${s2.leaps_summary ? `\nSchool's LEAPs context: ${s2.leaps_summary}` : ""}
+${s3.practices_summary ? `\nSchool's practices context: ${s3.practices_summary}` : ""}
+${s3.experience_summary ? `\nSchool's learning experience context: ${s3.experience_summary}` : ""}`;
+
+    case "alignment:outcomes":
+      return `
+=== TOPIC: ALIGNMENT ON OUTCOMES ===
+Use the VETTED ALIGNMENT DATA as your authoritative source for which outcomes are confirmed matches.
+
+IMPORTANT: You MUST address EVERY outcome listed in the vetted data — do not skip any. For each one:
+- If marked [CONFIRMED MATCH]: label it "Match" and explain HOW the model delivers on it, drawing from enrichment data, web research, and the CCL Outcomes reference document.
+- If marked [NOT MATCHED]: check enrichment data. If enrichment suggests the model may address this outcome, label it "Potential Alignment" (NOT "Partial Match") — explain what the model's published materials say, but note it hasn't been confirmed in the vetted assessment. If enrichment also shows nothing, label it "Mismatch" and note it as a gap.
+- Call out which gaps are on "Must Have" items vs. "Nice to Have."
+${s2.outcomes_summary ? `\nSchool's outcomes context: ${s2.outcomes_summary}` : ""}`;
+
+    case "alignment:leaps":
+      return `
+=== TOPIC: ALIGNMENT ON LEAPs ===
+Use the VETTED ALIGNMENT DATA as your authoritative source for which LEAPs are confirmed matches.
+
+IMPORTANT: You MUST address EVERY LEAP listed in the vetted data — do not skip any. For each one:
+- If marked [CONFIRMED MATCH]: label it "Match" and explain HOW the model embodies this LEAP, drawing from enrichment data, web research, and the LEAPs reference document.
+- If marked [NOT MATCHED]: check enrichment data. If enrichment suggests the model may address this LEAP, label it "Potential Alignment" (NOT "Partial Match") — explain what the model's published materials say, but note it hasn't been confirmed in the vetted assessment. If enrichment also shows nothing, label it "Mismatch" and note it as a gap.
+- Call out which gaps are on "Must Have" items vs. "Nice to Have."
+${s2.leaps_summary ? `\nSchool's LEAPs context: ${s2.leaps_summary}` : ""}`;
+
+    case "alignment:practices":
+      return `
+=== TOPIC: ALIGNMENT ON PRACTICES ===
+Use the VETTED ALIGNMENT DATA as your authoritative source for which practices are confirmed matches.
+
+IMPORTANT: You MUST address EVERY practice listed in the vetted data — do not skip any. For each one:
+- If marked [CONFIRMED MATCH]: label it "Match" and explain HOW the model delivers this practice, drawing from enrichment data, web research, and the Practices reference document.
+- If marked [NOT MATCHED]: check enrichment data. If enrichment suggests the model may incorporate this practice, label it "Potential Alignment" (NOT "Partial Match") — explain what the model's published materials say, but note it hasn't been confirmed in the vetted assessment. If enrichment also shows nothing, label it "Mismatch" and note it as a gap.
+- Call out which gaps are on "Must Have" items vs. "Nice to Have."
+${s3.practices_summary ? `\nSchool's practices context: ${s3.practices_summary}` : ""}
+${s3.experience_summary ? `\nSchool's learning experience context: ${s3.experience_summary}` : ""}`;
+
+    default:
+      if (topic.startsWith("watchout:")) {
+        const domain = topic.slice("watchout:".length);
+        const s4 = stepData["4"] || {};
+        const domainContext = Object.entries(s4)
+          .filter(([k]) => k.toLowerCase().includes(domain.toLowerCase()) || k.includes("context"))
+          .map(([k, v]) => `${k}: ${v}`)
+          .join("\n");
+
+        return `
+=== TOPIC: WATCH OUT — ${domain.toUpperCase()} ===
+The user wants to discuss a specific watch out about "${domain}".
+1. State the tension clearly: what the school's constraint is and why this model flags a concern.
+2. Assess severity honestly: is this a dealbreaker, a manageable tension, or less serious than it appears?
+3. Draw on web research about how other schools have navigated this tension with this model.
+4. Reference the System Elements document for full context on what "${domain}" means in CCL implementation.
+5. Offer mitigation strategies: what would it take to make this work despite the tension?
+
+Be direct and honest. This is where the school team needs your most candid assessment.
+${domainContext ? `\nSchool's system element inputs for this area:\n${domainContext}` : ""}`;
+      }
+      return "";
+  }
+}
+
+/**
+ * Returns a topic-scoped web search query. Falls back to the generic model search
+ * if topic is null/undefined.
+ */
+export function getTopicWebSearchQuery(
+  modelName: string,
+  topic: string | undefined,
+  specificItem?: string,
+): string {
+  if (!topic) return `${modelName} overview implementation evidence`;
+
+  switch (topic) {
+    case "model:executive_summary":
+      return `${modelName} overview implementation evidence`;
+    case "model:outcomes":
+      return `${modelName} student outcomes results evidence`;
+    case "model:leaps":
+      return `${modelName} student experience learning approach`;
+    case "model:practices":
+      return `${modelName} instructional practices pedagogy`;
+    case "alignment:overall":
+      return `${modelName} school alignment outcomes practices evidence`;
+    case "alignment:outcomes":
+      return specificItem
+        ? `${modelName} ${specificItem} outcomes evidence`
+        : `${modelName} student outcomes alignment evidence`;
+    case "alignment:leaps":
+      return specificItem
+        ? `${modelName} ${specificItem} student experience`
+        : `${modelName} student experience learning approach`;
+    case "alignment:practices":
+      return specificItem
+        ? `${modelName} ${specificItem} classroom pedagogy`
+        : `${modelName} instructional practices classroom pedagogy`;
+    default:
+      if (topic.startsWith("watchout:")) {
+        const domain = topic.slice("watchout:".length);
+        return `${modelName} ${domain} challenges schools implementation`;
+      }
+      return `${modelName} overview implementation evidence`;
+  }
 }

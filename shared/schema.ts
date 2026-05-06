@@ -36,6 +36,9 @@ export const models = pgTable("models", {
   implementationSupports: text("implementation_supports").notNull(),
   imageUrl: text("image_url"),
   attributes: jsonb("attributes").$type<Record<string, string>>().default({}),
+  airtableRecordId: text("airtable_record_id"),
+  enrichedContent: jsonb("enriched_content").$type<Record<string, string>>(),
+  enrichedAt: timestamp("enriched_at"),
 });
 
 // === MODEL FIELD DEFS (configurable model attributes for recommendation engine) ===
@@ -140,7 +143,7 @@ export const knowledgeBase = pgTable("knowledge_base", {
   fileName: text("file_name"),
   fileData: text("file_data"), // base64-encoded original file for download
   fileMimeType: text("file_mime_type"), // MIME type of original file
-  referenceType: text("reference_type"), // "outcomes" | "practices" | "leaps" | null (null = chat context)
+  referenceType: text("reference_type"), // "outcomes" | "practices" | "leaps" | "system_elements" | null (null = chat context)
   createdAt: timestamp("created_at").defaultNow(),
 });
 

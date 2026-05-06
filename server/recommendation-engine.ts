@@ -1,6 +1,6 @@
 import { storage } from "./storage";
 import type { Model, InsertRecommendation } from "@shared/schema";
-import { OUTCOME_GROUPS, PRACTICE_GROUPS } from "@shared/schema";
+import { OUTCOME_GROUPS } from "@shared/schema";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -18,7 +18,7 @@ interface MatchDetail {
   name: string;
   importance: ImportanceLevel;
   matched: boolean;
-  children?: { name: string; importance: ImportanceLevel }[];
+  children?: { name: string; importance: ImportanceLevel; matched?: boolean }[];
 }
 
 interface ScoreBreakdown {
@@ -152,7 +152,21 @@ export async function generateRecommendations(sessionId: number): Promise<void> 
 
   const selectedOutcomes: TaxonomySelection[] = step2.selected_outcomes || [];
   const selectedLeaps: TaxonomySelection[] = step2.selected_leaps || [];
-  const selectedPractices: TaxonomySelection[] = step3.selected_practices || [];
+  let selectedPractices: TaxonomySelection[] = step3.selected_practices || [];
+
+  // Path B stores primary practices in stepData.experience.primaryPractices
+  // and may not always merge them into stepData["3"].selected_practices.
+  // Ensure they're included for scoring.
+  const expData = (sd.experience as Record<string, any>) || {};
+  const expPrimaryPractices: TaxonomySelection[] = expData.primaryPractices || [];
+  if (expPrimaryPractices.length > 0) {
+    const existingIds = new Set(selectedPractices.map((p) => p.id));
+    const missing = expPrimaryPractices.filter((pp) => !existingIds.has(pp.id));
+    if (missing.length > 0) {
+      selectedPractices = [...selectedPractices, ...missing];
+    }
+  }
+
 
   const outcomesSummary: string = step2.outcomes_summary || "";
   const leapsSummary: string = step2.leaps_summary || "";
@@ -223,12 +237,12 @@ export async function generateRecommendations(sessionId: number): Promise<void> 
   for (const model of allModels) {
     const modelAttrsForScoring = (model.attributes as Record<string, string>) || {};
 
-    // Score Outcomes and Practices at the high-level group level (exact label match)
+    // Score Outcomes at the high-level group level (exact label match)
     const outcomesScore = computeGroupedScore(selectedOutcomes, model.outcomeTypes, OUTCOME_GROUPS, taxonomyById, outcomesTierBase);
     // Leaps matched individually by exact name against attributes["leaps"]
     const leapsScore = computeLeapsScore(selectedLeaps, modelAttrsForScoring["leaps"] ?? "", leapsTierBase);
-    // Practices grouped by activity category
-    const practicesScore = computeGroupedScore(selectedPractices, model.keyPractices, PRACTICE_GROUPS, taxonomyById, practicesTierBase);
+    // Practices matched individually by exact name against keyPractices, grouped for display
+    const practicesScore = computePracticesScore(selectedPractices, model.keyPractices, practicesTierBase);
 
     // Combined aims score (outcomes + leaps merged) — kept for UI backward compatibility
     const aimsScore = mergeScores(outcomesScore, leapsScore);
@@ -252,7 +266,6 @@ export async function generateRecommendations(sessionId: number): Promise<void> 
       });
     }
     constraintFlags.push(...watchoutFlags);
-    constraintFlags.push(...detectTextConstraints(constraintTexts, model));
 
     const contextNotes = buildContextNotes(userContext, model, outcomesSummary, leapsSummary, experienceSummary);
 
@@ -260,7 +273,6 @@ export async function generateRecommendations(sessionId: number): Promise<void> 
       outcomesScore.earned * outcomesWeight +
       leapsScore.earned * leapsWeight +
       practicesScore.earned * practicesWeight;
-    const gradePenalty = gradeBandMatch ? 1 : 0.8;
 
     filtered.push({
       model,
@@ -276,20 +288,26 @@ export async function generateRecommendations(sessionId: number): Promise<void> 
         contextNotes,
         preferences,
       } as AlignmentData,
-      sortScore: totalPoints * gradePenalty,
+      sortScore: totalPoints,
     });
   }
+
+  // Max possible score: sum of all user selection max weights × category weights.
+  // max is determined purely by the user's selections (tier weights per group), not the model.
+  const outcomesMax = selectedOutcomes.length > 0 ? computeGroupedScore(selectedOutcomes, "", OUTCOME_GROUPS, taxonomyById, outcomesTierBase).max : 0;
+  const leapsMax = selectedLeaps.length > 0 ? computeLeapsScore(selectedLeaps, "", leapsTierBase).max : 0;
+  const practicesMax = selectedPractices.length > 0 ? computePracticesScore(selectedPractices, "", practicesTierBase).max : 0;
+  const maxPossible = outcomesMax * outcomesWeight + leapsMax * leapsWeight + practicesMax * practicesWeight;
 
   filtered.sort((a, b) => b.sortScore - a.sortScore);
 
   // Only include models with at least one alignment point — zero-score models are not shown.
   const topRecs = filtered.filter((r) => r.sortScore > 0);
-  const bestScore = topRecs[0]?.sortScore || 0;
 
   const normalizedRecs: InsertRecommendation[] = topRecs.map((rec) => ({
     sessionId,
     modelId: rec.model.id,
-    score: bestScore > 0 ? Math.round((rec.sortScore / bestScore) * 100) : 0,
+    score: maxPossible > 0 ? Math.round((rec.sortScore / maxPossible) * 100) : 0,
     rationale: rec.alignment.gradeBandDetail,
     alignment: rec.alignment,
   }));
@@ -676,7 +694,7 @@ function tierPriority(tier: ImportanceLevel): number {
 /**
  * Group user selections by their taxonomy group key, apply the highest tier per group,
  * then exact-match the group label against the comma-separated model field.
- * Used for both Outcomes (OUTCOME_GROUPS) and Practices (PRACTICE_GROUPS).
+ * Used for Outcomes (OUTCOME_GROUPS). Practices use computePracticesScore() instead.
  */
 function computeGroupedScore(
   selections: TaxonomySelection[],
@@ -729,6 +747,44 @@ function computeGroupedScore(
       children: children.map((c) => ({ name: c.name, importance: c.importance })),
     });
   }
+
+  const pct = max > 0 ? Math.round((earned / max) * 100) : 0;
+  return { earned, max, pct, label: pctToLabel(pct), matches };
+}
+
+/** Normalize for practice matching: lowercase, collapse hyphens/whitespace */
+function normalizePracticeName(s: string): string {
+  return s.toLowerCase().replace(/[-–—]/g, " ").replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Match each selected practice individually by normalized name against the model's
+ * keyPractices comma-separated string. Normalization handles hyphen/space differences
+ * (e.g. "Self-Exploration" matches "Self Exploration").
+ */
+function computePracticesScore(
+  selections: TaxonomySelection[],
+  modelPractices: string,
+  tierBase?: Record<ImportanceLevel, number>,
+): ScoreBreakdown {
+  if (selections.length === 0) {
+    return { earned: 0, max: 0, pct: 0, label: "None", matches: [] };
+  }
+
+  const activeTierBase = tierBase ?? TIER_BASE;
+  const modelPracticeSet = new Set(
+    (modelPractices ?? "").split(",").map((s) => normalizePracticeName(s)).filter(Boolean)
+  );
+
+  let earned = 0;
+  let max = 0;
+  const matches: MatchDetail[] = selections.map((sel) => {
+    const weight = activeTierBase[sel.importance] ?? 3;
+    max += weight;
+    const matched = modelPracticeSet.has(normalizePracticeName(sel.name));
+    if (matched) earned += weight;
+    return { name: sel.name, importance: sel.importance, matched };
+  });
 
   const pct = max > 0 ? Math.round((earned / max) * 100) : 0;
   return { earned, max, pct, label: pctToLabel(pct), matches };

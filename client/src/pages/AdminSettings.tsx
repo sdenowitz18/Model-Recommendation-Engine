@@ -12,8 +12,11 @@ import {
   Loader2, Save, RotateCcw, Settings, ArrowLeft, RefreshCw, Upload, X,
   FileText, BookOpen, Plus, Pencil, Trash2, Sparkles, Target, AlertTriangle,
   ShieldAlert, Eye, Sliders, Zap, Database, Link2, FileSpreadsheet,
-  ChevronDown, ChevronRight, Table2, Bot, ExternalLink, DollarSign,
+  ChevronDown, ChevronRight, Table2, Bot, ExternalLink, DollarSign, BrainCircuit, CheckCircle2, Clock,
 } from "lucide-react";
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
+} from "@/components/ui/dialog";
 import { Link } from "wouter";
 import { api, buildUrl } from "@shared/routes";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -268,6 +271,9 @@ function ModelsTab() {
   const [isUploading, setIsUploading] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [showExcelImport, setShowExcelImport] = useState(false);
+  const [isEnrichingAll, setIsEnrichingAll] = useState(false);
+  const [enrichingModelId, setEnrichingModelId] = useState<number | null>(null);
+  const [viewingEnrichment, setViewingEnrichment] = useState<Model | null>(null);
 
   const { data: airtableConfig, refetch: refetchAirtable } = useQuery<{
     baseId: string | null;
@@ -378,8 +384,55 @@ function ModelsTab() {
     }
   };
 
+  const handleEnrichModel = async (modelId: number) => {
+    setEnrichingModelId(modelId);
+    try {
+      const res = await fetch(`/api/admin/models/${modelId}/enrich`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message || "Enrichment failed");
+      await refetchModels();
+      toast({ title: "Enrichment complete", description: data.message });
+    } catch (err: any) {
+      toast({ title: "Enrichment failed", description: err.message, variant: "destructive" });
+    } finally {
+      setEnrichingModelId(null);
+    }
+  };
+
+  const handleEnrichAll = async (onlyUnenriched: boolean) => {
+    setIsEnrichingAll(true);
+    try {
+      const res = await fetch("/api/admin/models/enrich-all", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ onlyUnenriched }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message || "Batch enrichment failed");
+      await refetchModels();
+      toast({
+        title: "Batch enrichment complete",
+        description: `${data.succeeded} succeeded, ${data.failed} failed. Est. cost: ${data.totalCost}`,
+      });
+    } catch (err: any) {
+      toast({ title: "Batch enrichment failed", description: err.message, variant: "destructive" });
+    } finally {
+      setIsEnrichingAll(false);
+    }
+  };
+
+  const enrichedCount = models.filter((m: Model) => !!(m as any).enrichedAt).length;
+
   return (
     <div className="space-y-8">
+      {/* Enrichment Viewer Dialog */}
+      <EnrichmentViewerDialog
+        model={viewingEnrichment}
+        onClose={() => setViewingEnrichment(null)}
+        onEnrich={(id) => { setViewingEnrichment(null); handleEnrichModel(id); }}
+        isEnriching={enrichingModelId === viewingEnrichment?.id}
+      />
+
       {/* Section 1: Airtable Connection */}
       <div>
         <div className="mb-4">
@@ -538,11 +591,38 @@ function ModelsTab() {
                 {models.length > 0 && (
                   <Badge variant="secondary" className="text-xs font-normal">{models.length} models</Badge>
                 )}
+                {enrichedCount > 0 && (
+                  <Badge variant="outline" className="text-xs font-normal text-green-700 border-green-300">
+                    <CheckCircle2 className="w-3 h-3 mr-1" />
+                    {enrichedCount} enriched
+                  </Badge>
+                )}
               </h2>
               <p className="text-sm text-muted-foreground mt-0.5">
                 Read-only view of all models in the system with their attribute fields. Use this to verify
                 scoring rules are triggering correctly.
               </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => handleEnrichAll(true)}
+                disabled={isEnrichingAll || enrichingModelId !== null}
+              >
+                {isEnrichingAll
+                  ? <><Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> Enriching...</>
+                  : <><BrainCircuit className="w-3.5 h-3.5 mr-1.5" /> Enrich Unenriched</>}
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => handleEnrichAll(false)}
+                disabled={isEnrichingAll || enrichingModelId !== null}
+              >
+                <RefreshCw className="w-3.5 h-3.5 mr-1.5" />
+                Re-enrich All
+              </Button>
             </div>
           </div>
         </div>
@@ -550,6 +630,9 @@ function ModelsTab() {
           models={Array.isArray(models) ? models : []}
           fieldDefs={Array.isArray(fieldDefs) ? fieldDefs : []}
           isLoading={isLoadingModels}
+          onViewEnrichment={(model) => setViewingEnrichment(model)}
+          onEnrichModel={(id) => handleEnrichModel(id)}
+          enrichingModelId={enrichingModelId}
         />
       </div>
     </div>
@@ -607,6 +690,124 @@ function TagCell({ value, preview = 2 }: { value: string | null | undefined; pre
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// ENRICHMENT VIEWER DIALOG
+// ─────────────────────────────────────────────────────────────────────────────
+
+const ENRICHMENT_FIELD_LABELS: Record<string, string> = {
+  summary: "Executive Summary",
+  target_audience: "Target Audience",
+  core_approach: "Core Approach",
+  evidence_base: "Evidence Base",
+  implementation: "Implementation",
+  cost_and_access: "Cost & Access",
+  outcomes_detail: "Outcomes (CCL Alignment)",
+  leaps_detail: "LEAPs (CCL Alignment)",
+  practices_detail: "Practices (CCL Alignment)",
+  known_challenges: "Known Challenges",
+  scheduling_impact: "Scheduling Impact",
+  staffing_requirements: "Staffing Requirements",
+  technology_needs: "Technology Needs",
+  partnership_model: "Partnership Model",
+};
+
+const ENRICHMENT_DISPLAY_ORDER = [
+  "summary", "target_audience", "core_approach", "evidence_base",
+  "implementation", "cost_and_access", "outcomes_detail", "leaps_detail",
+  "practices_detail", "known_challenges", "scheduling_impact",
+  "staffing_requirements", "technology_needs", "partnership_model",
+];
+
+function EnrichmentViewerDialog({
+  model,
+  onClose,
+  onEnrich,
+  isEnriching,
+}: {
+  model: Model | null;
+  onClose: () => void;
+  onEnrich: (id: number) => void;
+  isEnriching: boolean;
+}) {
+  if (!model) return null;
+
+  const enriched = (model as any).enrichedContent as Record<string, string> | null;
+  const enrichedAt = (model as any).enrichedAt;
+
+  const hasDetailedKeys = enriched && Object.keys(enriched).some((k) => k.endsWith("_detailed"));
+
+  return (
+    <Dialog open={!!model} onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <BrainCircuit className="w-5 h-5 text-primary" />
+            {model.name} — Enrichment Data
+          </DialogTitle>
+          <DialogDescription>
+            {enrichedAt
+              ? `Last enriched: ${new Date(enrichedAt).toLocaleString()}`
+              : "Not yet enriched"}
+            {enriched?.source_url && (
+              <> · Source: <a href={enriched.source_url} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">{enriched.source_url}</a></>
+            )}
+          </DialogDescription>
+        </DialogHeader>
+
+        {!enriched ? (
+          <div className="py-8 text-center space-y-3">
+            <BrainCircuit className="w-10 h-10 text-muted-foreground mx-auto" />
+            <p className="text-sm text-muted-foreground">No enrichment data yet.</p>
+            <Button
+              size="sm"
+              onClick={() => onEnrich(model.id)}
+              disabled={isEnriching}
+            >
+              {isEnriching
+                ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Enriching...</>
+                : <><BrainCircuit className="w-4 h-4 mr-2" /> Enrich Now</>}
+            </Button>
+          </div>
+        ) : (
+          <div className="space-y-4 mt-2">
+            {ENRICHMENT_DISPLAY_ORDER.map((key) => {
+              const value = hasDetailedKeys ? enriched[`${key}_detailed`] : enriched[key];
+              if (!value) return null;
+              const isUnavailable = value === "Not available from current sources";
+              return (
+                <div key={key} className="border rounded-lg p-4">
+                  <h4 className="text-sm font-semibold mb-1.5 text-foreground">
+                    {ENRICHMENT_FIELD_LABELS[key] || key}
+                  </h4>
+                  <p className={`text-sm leading-relaxed whitespace-pre-wrap ${isUnavailable ? "text-muted-foreground italic" : "text-foreground/80"}`}>
+                    {value}
+                  </p>
+                </div>
+              );
+            })}
+
+            <div className="pt-2 border-t flex items-center justify-between">
+              <p className="text-xs text-muted-foreground">
+                {enrichedAt && <>Enriched {new Date(enrichedAt).toLocaleString()}</>}
+              </p>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => onEnrich(model.id)}
+                disabled={isEnriching}
+              >
+                {isEnriching
+                  ? <><Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> Re-enriching...</>
+                  : <><RefreshCw className="w-3.5 h-3.5 mr-1.5" /> Re-enrich</>}
+              </Button>
+            </div>
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // MODEL SPREADSHEET (read-only)
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -614,10 +815,16 @@ function ModelSpreadsheet({
   models: modelsProp,
   fieldDefs: fieldDefsProp,
   isLoading,
+  onViewEnrichment,
+  onEnrichModel,
+  enrichingModelId,
 }: {
   models: Model[];
   fieldDefs: ModelFieldDef[];
   isLoading: boolean;
+  onViewEnrichment: (model: Model) => void;
+  onEnrichModel: (id: number) => void;
+  enrichingModelId: number | null;
 }) {
   const models = Array.isArray(modelsProp) ? modelsProp : [];
   const fieldDefs = Array.isArray(fieldDefsProp) ? fieldDefsProp : [];
@@ -662,6 +869,9 @@ function ModelSpreadsheet({
             <tr className="border-b bg-muted/50">
               <th className="text-left px-4 py-3 font-semibold text-xs uppercase tracking-wider text-muted-foreground whitespace-nowrap sticky left-0 bg-muted/50 z-10 min-w-[200px]">
                 Model Name
+              </th>
+              <th className="text-center px-4 py-3 font-semibold text-xs uppercase tracking-wider text-muted-foreground whitespace-nowrap min-w-[120px]">
+                Enrichment
               </th>
               <th className="text-left px-4 py-3 font-semibold text-xs uppercase tracking-wider text-muted-foreground whitespace-nowrap min-w-[80px]">
                 Grades
@@ -709,6 +919,31 @@ function ModelSpreadsheet({
                         {model.name}
                       </span>
                     </Link>
+                  </td>
+                  <td className="px-4 py-3 text-center">
+                    {(model as any).enrichedAt ? (
+                      <button
+                        onClick={() => onViewEnrichment(model)}
+                        className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium bg-green-50 text-green-700 hover:bg-green-100 transition-colors cursor-pointer border border-green-200"
+                      >
+                        <CheckCircle2 className="w-3 h-3" />
+                        View
+                      </button>
+                    ) : enrichingModelId === model.id ? (
+                      <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                        Enriching...
+                      </span>
+                    ) : (
+                      <button
+                        onClick={() => onEnrichModel(model.id)}
+                        disabled={enrichingModelId !== null}
+                        className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors cursor-pointer border border-border disabled:opacity-50"
+                      >
+                        <BrainCircuit className="w-3 h-3" />
+                        Enrich
+                      </button>
+                    )}
                   </td>
                   <td className="px-4 py-3 text-muted-foreground whitespace-nowrap text-xs">
                     {model.grades || <span className="text-muted-foreground/40">—</span>}

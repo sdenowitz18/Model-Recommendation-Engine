@@ -7,7 +7,7 @@ import * as xlsx from "xlsx";
 import { storage } from "./storage";
 import { openai } from "./openai";
 import { toFile } from "openai";
-import { getDefaultGlobalPrompt, getDefaultStepPrompts } from "./prompts";
+import { getDefaultGlobalPrompt, getDefaultStepPrompts, getTopicReferenceTypes, getTopicPromptAddendum, getTopicWebSearchQuery, formatAlignmentContext } from "./prompts";
 import { generateRecommendations } from "./recommendation-engine";
 import { extractFileContent } from "./file-parser";
 import { matchTaxonomyName, normalizeGradeBandToCanonical } from "./taxonomy-match";
@@ -197,6 +197,47 @@ export async function registerRoutes(
     } catch (err) {
       console.error("Airtable sync error:", err);
       res.status(500).json({ message: err instanceof Error ? err.message : "Failed to sync from Airtable" });
+    }
+  });
+
+  // ── Model Enrichment ──────────────────────────────────────────────────
+
+  app.post("/api/admin/models/:id/enrich", async (req, res) => {
+    try {
+      const modelId = parseInt(req.params.id, 10);
+      if (isNaN(modelId)) {
+        return res.status(400).json({ message: "Invalid model ID" });
+      }
+      const { enrichModel } = await import("./enrich-models");
+      const result = await enrichModel(modelId);
+      if (result.success) {
+        res.json({ message: `Enriched "${result.modelName}" successfully`, result });
+      } else {
+        res.status(400).json({ message: result.error, result });
+      }
+    } catch (err) {
+      console.error("Enrichment error:", err);
+      res.status(500).json({ message: err instanceof Error ? err.message : "Enrichment failed" });
+    }
+  });
+
+  app.post("/api/admin/models/enrich-all", async (req, res) => {
+    try {
+      const onlyUnenriched = req.body?.onlyUnenriched !== false;
+      const { enrichAllModels } = await import("./enrich-models");
+      const { results, totalCost } = await enrichAllModels(onlyUnenriched);
+      const succeeded = results.filter((r) => r.success).length;
+      const failed = results.filter((r) => !r.success).length;
+      res.json({
+        message: `Enrichment complete: ${succeeded} succeeded, ${failed} failed`,
+        succeeded,
+        failed,
+        totalCost,
+        results,
+      });
+    } catch (err) {
+      console.error("Batch enrichment error:", err);
+      res.status(500).json({ message: err instanceof Error ? err.message : "Batch enrichment failed" });
     }
   });
 
@@ -433,70 +474,101 @@ export async function registerRoutes(
         }
       }
 
-      // Step 8: inject the selected model's full profile + dynamic attributes + live web research
+      // Step 8: inject model profile + enrichment (primary) + web research (fallback)
       let selectedModelContext = "";
       if (stepNumber === 8) {
         const selectedModelId = directModelId ?? (allStepData["8"] as any)?.selectedModelId;
         if (selectedModelId) {
           const selectedModel = await storage.getModel(Number(selectedModelId));
           if (selectedModel) {
-            // Base model profile from Airtable
             selectedModelContext = `\n\n=== MODEL BEING EXPLORED ===\nName: ${selectedModel.name}\nGrade Bands: ${selectedModel.grades}\nDescription: ${selectedModel.description}\nKey Practices: ${selectedModel.keyPractices}\nOutcome Types: ${selectedModel.outcomeTypes}\nImplementation Supports: ${selectedModel.implementationSupports}${selectedModel.link ? `\nWebsite: ${selectedModel.link}` : ""}`;
 
-            // Append admin-configured dynamic attributes if present
             const attrs = selectedModel.attributes as Record<string, string> | null;
             if (attrs && Object.keys(attrs).length > 0) {
               selectedModelContext += `\n\nAdditional Model Details:\n` +
                 Object.entries(attrs).map(([k, v]) => `- ${k}: ${v}`).join("\n");
             }
 
-            // Fetch or retrieve cached web research — keyed per model ID to prevent bleed-over.
-            // For greetings: fire in background so the response is instant.
-            // For subsequent messages: use cache or fetch synchronously.
-            const step8Data = (allStepData["8"] as Record<string, any>) ?? {};
-            const webContentKey = `webContent_${selectedModel.id}`;
-            let modelWebContent: string = step8Data[webContentKey] ?? "";
-
-            if (!modelWebContent && isGreeting) {
-              // Fire-and-forget: don't block the greeting on web research
-              fetchModelWebResearch(selectedModel.name, selectedModel.link)
-                .then(async (content) => {
-                  if (!content) return;
-                  try {
-                    const freshProgress = await storage.getWorkflowProgress(session.id);
-                    if (!freshProgress) return;
-                    const updatedStepData = { ...(freshProgress.stepData as Record<string, any>) };
-                    const freshStep8 = (updatedStepData["8"] as Record<string, any>) ?? {};
-                    if (!freshStep8[webContentKey]) {
-                      updatedStepData["8"] = { ...freshStep8, [webContentKey]: content };
-                      await storage.updateWorkflowProgress(session.id, freshProgress.currentStep, freshProgress.stepsCompleted as number[], updatedStepData);
-                    }
-                  } catch (e) {
-                    console.warn("[Step 8] Background web research cache save failed:", e);
-                  }
+            // Enrichment data — primary context source when available
+            const enriched = selectedModel.enrichedContent as Record<string, string> | null;
+            if (enriched) {
+              const metaKeys = new Set(["raw_scrape", "source_url"]);
+              const enrichmentFields = Object.entries(enriched)
+                .filter(([k]) => !metaKeys.has(k) && !k.endsWith("_summary"))
+                .filter(([, v]) => v && v !== "Not available from current sources")
+                .map(([k, v]) => {
+                  const label = k.replace(/_detailed$/, "").replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+                  return `### ${label}\n${v}`;
                 })
-                .catch(err => console.warn("[Step 8] Background web research failed:", err));
-              // Don't include web content in the greeting context — it isn't ready yet
-              modelWebContent = "";
-            } else if (!modelWebContent) {
-              // Subsequent messages: fetch synchronously so the AI has full context
-              modelWebContent = await fetchModelWebResearch(selectedModel.name, selectedModel.link);
-              if (modelWebContent) {
-                const updatedStepData = { ...(progress.stepData as Record<string, any>) };
-                updatedStepData["8"] = { ...step8Data, [webContentKey]: modelWebContent };
-                await storage.updateWorkflowProgress(
-                  session.id,
-                  progress.currentStep,
-                  progress.stepsCompleted as number[],
-                  updatedStepData,
-                );
+                .join("\n\n");
+              if (enrichmentFields) {
+                selectedModelContext += `\n\n=== MODEL ENRICHMENT DATA (supplementary — from model website and publications) ===\n${enrichmentFields}`;
               }
             }
 
-            if (modelWebContent) {
-              selectedModelContext += `\n\n=== MODEL RESEARCH SUMMARY ===\n${modelWebContent}`;
-            } else if (!isGreeting) {
-              selectedModelContext += `\n\n=== MODEL RESEARCH SUMMARY ===\nResearch summary unavailable. Draw on your training knowledge about this model and direct the user to the model's website for additional information${selectedModel.link ? ` at ${selectedModel.link}` : ""}.`;
+            // Web research — secondary fallback when enrichment is absent or thin
+            const hasSubstantiveEnrichment = enriched && Object.keys(enriched).filter(
+              (k) => k.endsWith("_detailed") && enriched[k] && enriched[k] !== "Not available from current sources"
+            ).length >= 3;
+
+            if (!hasSubstantiveEnrichment) {
+              const step8Data = (allStepData["8"] as Record<string, any>) ?? {};
+              const webContentKey = `webContent_${selectedModel.id}`;
+              let modelWebContent: string = step8Data[webContentKey] ?? "";
+
+              if (!modelWebContent && isGreeting) {
+                fetchModelWebResearch(selectedModel.name, selectedModel.link)
+                  .then(async (content) => {
+                    if (!content) return;
+                    try {
+                      const freshProgress = await storage.getWorkflowProgress(session.id);
+                      if (!freshProgress) return;
+                      const updatedStepData = { ...(freshProgress.stepData as Record<string, any>) };
+                      const freshStep8 = (updatedStepData["8"] as Record<string, any>) ?? {};
+                      if (!freshStep8[webContentKey]) {
+                        updatedStepData["8"] = { ...freshStep8, [webContentKey]: content };
+                        await storage.updateWorkflowProgress(session.id, freshProgress.currentStep, freshProgress.stepsCompleted as number[], updatedStepData);
+                      }
+                    } catch (e) {
+                      console.warn("[Step 8] Background web research cache save failed:", e);
+                    }
+                  })
+                  .catch(err => console.warn("[Step 8] Background web research failed:", err));
+                modelWebContent = "";
+              } else if (!modelWebContent) {
+                modelWebContent = await fetchModelWebResearch(selectedModel.name, selectedModel.link);
+                if (modelWebContent) {
+                  const updatedStepData = { ...(progress.stepData as Record<string, any>) };
+                  updatedStepData["8"] = { ...step8Data, [webContentKey]: modelWebContent };
+                  await storage.updateWorkflowProgress(
+                    session.id,
+                    progress.currentStep,
+                    progress.stepsCompleted as number[],
+                    updatedStepData,
+                  );
+                }
+              }
+
+              if (modelWebContent) {
+                selectedModelContext += `\n\n=== MODEL RESEARCH SUMMARY (WEB) ===\n${modelWebContent}`;
+              } else if (!isGreeting) {
+                selectedModelContext += `\n\n=== MODEL RESEARCH SUMMARY ===\nResearch summary unavailable. Draw on your training knowledge about this model and direct the user to the model's website for additional information${selectedModel.link ? ` at ${selectedModel.link}` : ""}.`;
+              }
+            }
+          }
+        }
+      }
+
+      // Inject vetted alignment data for Step 8
+      if (stepNumber === 8 && selectedModelContext) {
+        const selectedModelId = directModelId ?? (allStepData["8"] as any)?.selectedModelId;
+        if (selectedModelId) {
+          const allRecs = await storage.getRecommendations(session.id);
+          const modelRec = allRecs.find((r) => r.modelId === Number(selectedModelId));
+          if (modelRec?.alignment) {
+            const alignmentBlock = formatAlignmentContext(modelRec.alignment as Record<string, any>);
+            if (alignmentBlock) {
+              selectedModelContext += `\n\n=== VETTED ALIGNMENT DATA (AUTHORITATIVE — from our curated database) ===\n${alignmentBlock}`;
             }
           }
         }
@@ -611,10 +683,11 @@ The JSON object must have these exact keys:
   // =========================================================================
 
   app.post("/api/chat/step8/stream", async (req, res) => {
-    const { sessionId, message, modelId: directModelId } = req.body as {
+    const { sessionId, message, modelId: directModelId, topic } = req.body as {
       sessionId: string;
       message: string;
       modelId?: number;
+      topic?: string;
     };
 
     if (!sessionId || !message || !directModelId) {
@@ -655,16 +728,30 @@ The JSON object must have these exact keys:
           stepDocs.map((d) => `--- ${d.fileName} ---\n${d.fileContent}`).join("\n\n")
         : "";
 
-      const searchQuery = isGreeting ? `Step 8: Explore a Specific Model` : message;
-      const relevantChunks = await retrieveRelevantChunks(searchQuery, stepNumber, 12);
-      const kbEntries = relevantChunks.length === 0 ? await storage.getKnowledgeBase(stepNumber) : [];
-      const knowledgeBaseContext = relevantChunks.length > 0
-        ? "\n\n=== KNOWLEDGE BASE (most relevant sections) ===\n" +
-          relevantChunks.map((c, i) => `[${i + 1}] ${c.content}`).join("\n\n")
-        : kbEntries.length > 0
-          ? "\n\n=== KNOWLEDGE BASE FOR THIS STEP ===\n" +
-            kbEntries.map((e) => `--- ${e.title} ---\n${e.content}`).join("\n\n")
-          : "";
+      // Topic-aware KB retrieval: deterministic by referenceType when a topic is set,
+      // otherwise fall back to embedding-based RAG.
+      const topicRefTypes = getTopicReferenceTypes(topic);
+      let knowledgeBaseContext = "";
+      if (topicRefTypes) {
+        const topicKbEntries = (await Promise.all(
+          topicRefTypes.map((rt) => storage.getKnowledgeByReferenceType(rt))
+        )).flat();
+        if (topicKbEntries.length > 0) {
+          knowledgeBaseContext = "\n\n=== REFERENCE DOCUMENTS (CCL taxonomy definitions) ===\n" +
+            topicKbEntries.map((e) => `--- ${e.title} ---\n${e.content}`).join("\n\n");
+        }
+      } else {
+        const searchQuery = isGreeting ? `Step 8: Explore a Specific Model` : message;
+        const relevantChunks = await retrieveRelevantChunks(searchQuery, stepNumber, 12);
+        const kbEntries = relevantChunks.length === 0 ? await storage.getKnowledgeBase(stepNumber) : [];
+        knowledgeBaseContext = relevantChunks.length > 0
+          ? "\n\n=== KNOWLEDGE BASE (most relevant sections) ===\n" +
+            relevantChunks.map((c, i) => `[${i + 1}] ${c.content}`).join("\n\n")
+          : kbEntries.length > 0
+            ? "\n\n=== KNOWLEDGE BASE FOR THIS STEP ===\n" +
+              kbEntries.map((e) => `--- ${e.title} ---\n${e.content}`).join("\n\n")
+            : "";
+      }
 
       const allStepData = progress.stepData as Record<string, any>;
       let priorStepsContext = "";
@@ -681,7 +768,7 @@ The JSON object must have these exact keys:
         ? `\n\n=== CURRENT STEP DATA (captured so far) ===\n${typeof currentStepData === "string" ? currentStepData : JSON.stringify(currentStepData, null, 2)}`
         : "";
 
-      // Model profile + web research
+      // Model profile + enrichment (primary) + web research (fallback)
       const selectedModel = await storage.getModel(Number(directModelId));
       let selectedModelContext = "";
       if (selectedModel) {
@@ -693,34 +780,70 @@ The JSON object must have these exact keys:
             Object.entries(attrs).map(([k, v]) => `- ${k}: ${v}`).join("\n");
         }
 
-        const step8Data = (allStepData["8"] as Record<string, any>) ?? {};
-        const webContentKey = `webContent_${selectedModel.id}`;
-        let modelWebContent: string = step8Data[webContentKey] ?? "";
-
-        // Never await web research here — it can exceed the serverless timeout and
-        // block streaming. Prefetch + background fetch only; next message may use cache.
-        if (!modelWebContent) {
-          fetchModelWebResearch(selectedModel.name, selectedModel.link)
-            .then(async (content) => {
-              if (!content) return;
-              const fp = await storage.getWorkflowProgress(session.id);
-              if (!fp) return;
-              const us = { ...(fp.stepData as Record<string, any>) };
-              const fs8 = (us["8"] as Record<string, any>) ?? {};
-              if (!fs8[webContentKey]) {
-                us["8"] = { ...fs8, [webContentKey]: content };
-                await storage.updateWorkflowProgress(session.id, fp.currentStep, fp.stepsCompleted as number[], us);
-              }
+        // Enrichment data — primary context source when available
+        const enriched = selectedModel.enrichedContent as Record<string, string> | null;
+        if (enriched) {
+          const metaKeys = new Set(["raw_scrape", "source_url"]);
+          const enrichmentFields = Object.entries(enriched)
+            .filter(([k]) => !metaKeys.has(k) && !k.endsWith("_summary"))
+            .filter(([, v]) => v && v !== "Not available from current sources")
+            .map(([k, v]) => {
+              const label = k.replace(/_detailed$/, "").replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+              return `### ${label}\n${v}`;
             })
-            .catch((err) => console.warn("[Step 8 stream] Background web research failed:", err));
+            .join("\n\n");
+          if (enrichmentFields) {
+            selectedModelContext += `\n\n=== MODEL ENRICHMENT DATA (supplementary — from model website and publications) ===\n${enrichmentFields}`;
+          }
         }
 
-        if (modelWebContent) {
-          selectedModelContext += `\n\n=== MODEL RESEARCH SUMMARY ===\n${modelWebContent}`;
-        } else if (!isGreeting) {
-          selectedModelContext += `\n\n=== MODEL RESEARCH SUMMARY ===\nResearch summary unavailable. Draw on your training knowledge about this model${selectedModel.link ? ` and direct the user to ${selectedModel.link}` : ""}.`;
+        // Web research — secondary fallback when enrichment is absent or thin
+        const hasSubstantiveEnrichment = enriched && Object.keys(enriched).filter(
+          (k) => k.endsWith("_detailed") && enriched[k] && enriched[k] !== "Not available from current sources"
+        ).length >= 3;
+
+        if (!hasSubstantiveEnrichment) {
+          const step8Data = (allStepData["8"] as Record<string, any>) ?? {};
+          const webContentKey = `webContent_${selectedModel.id}`;
+          let modelWebContent: string = step8Data[webContentKey] ?? "";
+
+          if (!modelWebContent) {
+            fetchModelWebResearch(selectedModel.name, selectedModel.link)
+              .then(async (content) => {
+                if (!content) return;
+                const fp = await storage.getWorkflowProgress(session.id);
+                if (!fp) return;
+                const us = { ...(fp.stepData as Record<string, any>) };
+                const fs8 = (us["8"] as Record<string, any>) ?? {};
+                if (!fs8[webContentKey]) {
+                  us["8"] = { ...fs8, [webContentKey]: content };
+                  await storage.updateWorkflowProgress(session.id, fp.currentStep, fp.stepsCompleted as number[], us);
+                }
+              })
+              .catch((err) => console.warn("[Step 8 stream] Background web research failed:", err));
+          }
+
+          if (modelWebContent) {
+            selectedModelContext += `\n\n=== MODEL RESEARCH SUMMARY (WEB) ===\n${modelWebContent}`;
+          } else if (!isGreeting) {
+            selectedModelContext += `\n\n=== MODEL RESEARCH SUMMARY ===\nResearch summary unavailable. Draw on your training knowledge about this model${selectedModel.link ? ` and direct the user to ${selectedModel.link}` : ""}.`;
+          }
         }
       }
+
+      // Inject vetted alignment data
+      if (selectedModel) {
+        const allRecs = await storage.getRecommendations(session.id);
+        const modelRec = allRecs.find((r) => r.modelId === Number(directModelId));
+        if (modelRec?.alignment) {
+          const alignmentBlock = formatAlignmentContext(modelRec.alignment as Record<string, any>);
+          if (alignmentBlock) {
+            selectedModelContext += `\n\n=== VETTED ALIGNMENT DATA (AUTHORITATIVE — from our curated database) ===\n${alignmentBlock}`;
+          }
+        }
+      }
+
+      const topicAddendum = getTopicPromptAddendum(topic, allStepData);
 
       const systemPrompt = `${globalPrompt}
 
@@ -732,6 +855,7 @@ ${uploadedDocsContext}
 ${priorStepsContext ? `\n=== PRIOR STEPS SUMMARY ===\n${priorStepsContext}` : ""}
 ${currentStepContext}
 ${selectedModelContext}
+${topicAddendum}
 
 === RESPONSE STYLE ===
 Use markdown formatting — headers and bullets for structured answers, prose for nuanced analysis. Match response depth to the question: brief for factual lookups, thorough for fit/implementation analysis. No preambles. No restating the question. Be direct.`;
@@ -772,6 +896,38 @@ Use markdown formatting — headers and bullets for structured answers, prose fo
           res.write(`data: ${JSON.stringify({ token })}\n\n`);
         }
       }
+
+      // Generate suggested follow-up questions (non-blocking best-effort before closing stream)
+      if (!isGreeting && topic) {
+        try {
+          const followUpCompletion = await openai.chat.completions.create({
+            model: "gpt-4o-mini",
+            temperature: 0.3,
+            max_tokens: 150,
+            messages: [
+              {
+                role: "system",
+                content: `Generate 1-2 natural follow-up questions a school leader might ask after reading the assistant's response about a school model. Keep them short (under 15 words each). Return a JSON object: { "followUps": ["question1", "question2"] }`,
+              },
+              {
+                role: "user",
+                content: `Topic: ${topic}\nAssistant just said:\n${fullMessage.slice(0, 1000)}`,
+              },
+            ],
+            response_format: { type: "json_object" },
+          });
+          const followUpRaw = followUpCompletion.choices[0].message.content;
+          if (followUpRaw) {
+            const parsed = JSON.parse(followUpRaw);
+            if (parsed.followUps?.length > 0) {
+              res.write(`data: ${JSON.stringify({ suggestedFollowUps: parsed.followUps })}\n\n`);
+            }
+          }
+        } catch {
+          // Follow-ups are best-effort; don't fail the response
+        }
+      }
+
       res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
       res.end();
 

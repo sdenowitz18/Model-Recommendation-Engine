@@ -183,3 +183,26 @@
   outline-offset: 2px;
   border-radius: 6px;
 }
+
+/* Print export container — hidden on screen, visible during print */
+.print-export-container { display: none; }
+
+@media print {
+  body { background: white !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .print-page { page-break-after: always; break-after: page; }
+  .print-page:last-child { page-break-after: auto; break-after: auto; }
+  @page { margin: 0.4in; }
+  /* When printing-export class is on body, hide the app and show the export container */
+  body.printing-export > #root { display: none !important; }
+  body.printing-export > .print-export-container { display: block !important; }
+  /* Experience Summary export: landscape to fit on one page */
+  body.printing-landscape > #root { display: none !important; }
+  body.printing-landscape .print-landscape-container { display: block !important; }
+}
+
+@page landscape-page { size: landscape; margin: 0.35in; }
+body.printing-landscape { }
+.print-landscape-container { display: none; }
+@media print {
+  body.printing-landscape .print-landscape-container { page: landscape-page; }
+}

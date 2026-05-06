@@ -38,6 +38,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { DecisionFramePathB, RecommendationsPathB } from "./DecisionPackagePathB";
 
 // Vercel serverless functions have a 4.5 MB request body limit.
 // Warn users who try to upload files larger than this.
@@ -130,7 +131,7 @@ const V2_STEPS_PATH_A: V2StepDef[] = [
   { number: 3, label: "Practices", icon: BookOpen },
   { number: 4, label: "System Elements", icon: Settings },
   { number: 5, label: "Model Preferences", icon: Sliders },
-  { number: 6, label: "Decision Frame", icon: ClipboardCheck },
+  { number: 6, label: "Experience Summary", icon: ClipboardCheck },
   { number: 7, label: "Recommendations", icon: LayoutGrid },
   { number: 8, label: "Explore Model", icon: Bot },
 ];
@@ -142,7 +143,7 @@ const V2_STEPS_PATH_B: V2StepDef[] = [
   { number: 9, label: "LEAPs", icon: Zap },
   { number: 4, label: "System Elements", icon: Settings },
   { number: 5, label: "Model Preferences", icon: Sliders },
-  { number: 6, label: "Decision Frame", icon: ClipboardCheck },
+  { number: 6, label: "Experience Summary", icon: ClipboardCheck },
   { number: 7, label: "Recommendations", icon: LayoutGrid },
   { number: 8, label: "Explore Model", icon: Bot },
 ];
@@ -258,7 +259,7 @@ const STEP_TRANSITION_CONTENT: Record<number, { title: string; body: string }> =
     body: "Share any preferences for model type, existing solutions you want to keep, or anything that would be a dealbreaker.",
   },
   6: {
-    title: "Decision Frame",
+    title: "Experience Summary",
     body: "Before we generate your recommendations, let's review a consolidated view of your context, aims, practices, and system constraints.",
   },
   7: {
@@ -367,6 +368,7 @@ export default function WorkflowV2() {
   // user hasn't yet picked a design scope (whole CCL program vs specific
   // experience). Once picked, the rest of the flow renders accordingly.
   const [showPathPicker, setShowPathPicker] = useState(false);
+  const [showPathBInterstitial, setShowPathBInterstitial] = useState(false);
 
   // Incremented whenever the user clicks "Generate Model Recommendations" from
   // the Decision Frame (step 6), so RecommendationsView always triggers a fresh run.
@@ -481,6 +483,12 @@ export default function WorkflowV2() {
 
     const nextStep = stepNumber + 1;
     if (nextStep <= 7) {
+      // Skip the transition page when going to Recommendations (step 7) for Path B
+      if (nextStep === 7 && designScope === "specific_experience") {
+        intendedNextStepRef.current = nextStep;
+        confirmStepMutation.mutate(stepNumber);
+        return;
+      }
       intendedNextStepRef.current = nextStep;
       transitionActionRef.current = () => confirmStepMutation.mutate(stepNumber);
       setTransitionToStep(nextStep);
@@ -512,7 +520,11 @@ export default function WorkflowV2() {
       });
       qc.invalidateQueries({ queryKey: [api.workflow.getProgress.path, sessionId] });
       setShowPathPicker(false);
-      setActiveStep(nextStep);
+      if (scope === "specific_experience") {
+        setShowPathBInterstitial(true);
+      } else {
+        setActiveStep(nextStep);
+      }
     } catch {
       toast({ title: "Error", description: "Could not save your choice.", variant: "destructive" });
     }
@@ -647,17 +659,104 @@ export default function WorkflowV2() {
 
   return (
     <div className="h-screen w-full overflow-hidden bg-background flex flex-col">
-      {/* Top bar: branding + step chevrons + actions */}
+      {/* Top bar: branding + step tabs + actions — single row */}
       <header className="shrink-0 border-b border-border bg-white">
-        {/* Row 1: branding + actions */}
-        <div className="flex items-center justify-between px-4 py-2">
-          <Link href="/" className="flex items-center gap-3 hover:opacity-80 transition-opacity">
-            <img src={logoUrl} alt="Transcend" className="h-6 w-auto select-none" draggable={false} />
-            <span className="hidden sm:block pl-3 border-l border-border text-[9px] font-display font-bold uppercase tracking-[0.18em] text-muted-foreground leading-tight">
+        <div className="flex items-center px-4 py-2 gap-4">
+          {/* Logo + label */}
+          <Link href="/" className="flex items-center gap-2.5 hover:opacity-80 transition-opacity shrink-0">
+            <img src={logoUrl} alt="Transcend" className="h-5 w-auto select-none" draggable={false} />
+            <span className="hidden sm:block pl-2.5 border-l border-border text-[9px] font-display font-bold uppercase tracking-[0.16em] text-muted-foreground leading-tight">
               Model<br />Advisor
             </span>
           </Link>
-          <div className="flex items-center gap-1">
+
+          {/* Step tabs — inline, scrollable */}
+          <div className="flex-1 min-w-0 flex items-center gap-0 overflow-x-auto">
+            {filteredHeaderRows.map((row, idx) => {
+              if (row.type === "pathPicker") {
+                const isPickActive = !!showPathPicker;
+                return (
+                  <div key="path-picker" className="flex items-center shrink-0">
+                    {idx > 0 && <ChevronRight className="w-3 h-3 text-muted-foreground/40 mx-0.5 shrink-0" />}
+                    <div
+                      role="presentation"
+                      className={cn(
+                        "flex items-center gap-1.5 px-2 py-1 rounded-full text-[11px] font-medium transition-colors whitespace-nowrap pointer-events-none",
+                        isPickActive && "bg-primary text-white shadow-sm",
+                        !isPickActive && "bg-muted/60 text-muted-foreground border border-border/60",
+                      )}
+                      data-testid="pill-choose-path"
+                    >
+                      <Split className="w-3 h-3 shrink-0" />
+                      <span className="hidden sm:inline">Choose path</span>
+                    </div>
+                  </div>
+                );
+              }
+
+              const step = row.step;
+              const isCompleted = stepsCompleted.includes(step.number);
+
+              let isActive = activeStep === step.number;
+              if (showPathPicker) {
+                isActive = false;
+              }
+
+              let progressDataKey: string | "experience" = String(step.number);
+              if (designScope === "specific_experience") {
+                if (step.number === 2) progressDataKey = "experience";
+                else if (step.number === 3) progressDataKey = "2";
+              }
+              const stepDataForStep = stepData[progressDataKey];
+              const hasProgress =
+                !isCompleted && !!stepDataForStep && typeof stepDataForStep === "object" && Object.keys(stepDataForStep).length > 0;
+
+              const step8Label = step.number === 8 && stepData["8"]?.selectedModelId
+                ? "Explore Model"
+                : step.label;
+
+              const Icon = step.icon || STEP_ICONS[step.number];
+
+              return (
+                <div key={step.number} className="flex items-center shrink-0">
+                  {idx > 0 && <ChevronRight className="w-3 h-3 text-muted-foreground/40 mx-0.5 shrink-0" />}
+                  <button
+                    type="button"
+                    onClick={() => { userManuallyNavigatedRef.current = true; setTransitionToStep(null); setActiveStep(step.number); }}
+                    className={cn(
+                      "flex items-center gap-1 px-2 py-1 rounded-full text-[11px] font-medium transition-colors whitespace-nowrap",
+                      isActive && "bg-primary text-white shadow-sm",
+                      isCompleted && !isActive && "bg-primary/10 text-primary hover:bg-primary/20",
+                      hasProgress && !isActive && !isCompleted && "bg-amber-50 text-amber-700 hover:bg-amber-100",
+                      !isActive && !isCompleted && !hasProgress && "bg-muted/60 text-muted-foreground hover:bg-muted",
+                    )}
+                    data-testid={`button-step-${step.number}`}
+                  >
+                    <span className={cn(
+                      "w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-bold shrink-0",
+                      isActive && "bg-white/20",
+                      isCompleted && !isActive && "bg-primary text-white",
+                      hasProgress && !isActive && !isCompleted && "bg-amber-200 text-amber-700",
+                    )}>
+                      {isCompleted ? (
+                        <Check className="w-2.5 h-2.5" />
+                      ) : Icon ? (
+                        <Icon className="w-2.5 h-2.5" />
+                      ) : step.number === 8 ? (
+                        <Bot className="w-2.5 h-2.5" />
+                      ) : (
+                        step.number
+                      )}
+                    </span>
+                    <span className="hidden sm:inline">{step.number === 8 ? step8Label : step.label}</span>
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Actions */}
+          <div className="flex items-center gap-1 shrink-0">
             <Button
               variant="ghost"
               size="sm"
@@ -671,93 +770,6 @@ export default function WorkflowV2() {
             </Button>
           </div>
         </div>
-
-        {/* Row 2: horizontal step chevrons (v2: dynamic by path) */}
-        <div className="flex items-center px-4 pb-2 gap-0 overflow-x-auto">
-          {filteredHeaderRows.map((row, idx) => {
-            if (row.type === "pathPicker") {
-              const isPickActive = !!showPathPicker;
-              return (
-                <div key="path-picker" className="flex items-center shrink-0">
-                  {idx > 0 && <ChevronRight className="w-3.5 h-3.5 text-muted-foreground/40 mx-0.5 shrink-0" />}
-                  <div
-                    role="presentation"
-                    className={cn(
-                      "flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-colors whitespace-nowrap pointer-events-none",
-                      isPickActive && "bg-primary text-white shadow-sm",
-                      !isPickActive && "bg-muted/60 text-muted-foreground border border-border/60",
-                    )}
-                    data-testid="pill-choose-path"
-                  >
-                    <span className="w-4.5 h-4.5 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 bg-white/15">
-                      <Split className="w-3 h-3" />
-                    </span>
-                    <span className="hidden sm:inline">Choose your path</span>
-                  </div>
-                </div>
-              );
-            }
-
-            const step = row.step;
-            const isCompleted = stepsCompleted.includes(step.number);
-
-            let isActive = activeStep === step.number;
-            if (showPathPicker) {
-              isActive = false;
-            }
-
-            let progressDataKey: string | "experience" = String(step.number);
-            if (designScope === "specific_experience") {
-              if (step.number === 2) progressDataKey = "experience";
-              else if (step.number === 3) progressDataKey = "2";
-            }
-            const stepDataForStep = stepData[progressDataKey];
-            const hasProgress =
-              !isCompleted && !!stepDataForStep && typeof stepDataForStep === "object" && Object.keys(stepDataForStep).length > 0;
-
-            const step8Label = step.number === 8 && stepData["8"]?.selectedModelId
-              ? "Explore Model"
-              : step.label;
-
-            const Icon = step.icon || STEP_ICONS[step.number];
-
-            return (
-              <div key={step.number} className="flex items-center shrink-0">
-                {idx > 0 && <ChevronRight className="w-3.5 h-3.5 text-muted-foreground/40 mx-0.5 shrink-0" />}
-                <button
-                  type="button"
-                  onClick={() => { userManuallyNavigatedRef.current = true; setTransitionToStep(null); setActiveStep(step.number); }}
-                  className={cn(
-                    "flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-colors whitespace-nowrap",
-                    isActive && "bg-primary text-white shadow-sm",
-                    isCompleted && !isActive && "bg-primary/10 text-primary hover:bg-primary/20",
-                    hasProgress && !isActive && !isCompleted && "bg-amber-50 text-amber-700 hover:bg-amber-100",
-                    !isActive && !isCompleted && !hasProgress && "bg-muted/60 text-muted-foreground hover:bg-muted",
-                  )}
-                  data-testid={`button-step-${step.number}`}
-                >
-                  <span className={cn(
-                    "w-4.5 h-4.5 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0",
-                    isActive && "bg-white/20",
-                    isCompleted && !isActive && "bg-primary text-white",
-                    hasProgress && !isActive && !isCompleted && "bg-amber-200 text-amber-700",
-                  )}>
-                    {isCompleted ? (
-                      <Check className="w-3 h-3" />
-                    ) : Icon ? (
-                      <Icon className="w-3 h-3" />
-                    ) : step.number === 8 ? (
-                      <Bot className="w-3 h-3" />
-                    ) : (
-                      step.number
-                    )}
-                  </span>
-                  <span className="hidden sm:inline">{step.number === 8 ? step8Label : step.label}</span>
-                </button>
-              </div>
-            );
-          })}
-        </div>
       </header>
 
       {/* Main Content Area — full width */}
@@ -767,6 +779,8 @@ export default function WorkflowV2() {
             onPick={handlePickPath}
             onBack={() => { setShowPathPicker(false); setActiveStep(1); }}
           />
+        ) : showPathBInterstitial ? (
+          <PathBInterstitialPage onContinue={() => { setShowPathBInterstitial(false); setActiveStep(2); }} />
         ) : transitionToStep !== null ? (
           <StepTransitionPage
             stepNumber={transitionToStep}
@@ -976,6 +990,18 @@ function StepContent({ sessionId, stepNumber, stepData, stepsCompleted, onConfir
 
   // Step 6: full-screen decision frame review (no chat, no split panel)
   if (stepNumber === 6) {
+    if (isPathB) {
+      return (
+        <DecisionFramePathB
+          sessionId={sessionId}
+          stepData={stepData}
+          stepsCompleted={stepsCompleted}
+          onGoToStep={onGoToStep}
+          onConfirm={() => onConfirmStep(6)}
+          isConfirming={isConfirming}
+        />
+      );
+    }
     return (
       <DecisionFrameReview
         stepData={stepData}
@@ -990,6 +1016,16 @@ function StepContent({ sessionId, stepNumber, stepData, stepsCompleted, onConfir
 
   // Step 7: full-screen recommendations view (no chat split panel)
   if (stepNumber === 7) {
+    if (isPathB) {
+      return (
+        <RecommendationsPathB
+          sessionId={sessionId}
+          stepData={stepData}
+          forceRefreshKey={recommendRefreshKey}
+          onGoToStep={onGoToStep}
+        />
+      );
+    }
     return (
       <RecommendationsView
         sessionId={sessionId}
@@ -1241,6 +1277,94 @@ function PathPickerPanel({ onPick, onBack }: PathPickerPanelProps) {
 }
 
 // ---------------------------------------------------------------------------
+// Path B Interstitial — shown after selecting "Define a specific experience"
+// ---------------------------------------------------------------------------
+
+function PathBInterstitialPage({ onContinue }: { onContinue: () => void }) {
+  return (
+    <div className="w-full h-full overflow-auto bg-background">
+      <div className="flex flex-col items-center justify-center min-h-full px-6 py-16">
+        <div className="w-full max-w-2xl space-y-8">
+
+          <div className="text-center space-y-3">
+            <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-primary/10 mb-2">
+              <svg className="w-7 h-7 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 00-2.455 2.456z" />
+              </svg>
+            </div>
+            <h1 className="text-4xl font-display font-bold text-foreground leading-tight">
+              Let's define your experience
+            </h1>
+            <p className="text-muted-foreground text-base max-w-xl mx-auto leading-relaxed">
+              We'll walk you through a short series of inputs so we can find the best-fit models for what you're designing. This typically takes 10–15 minutes.
+            </p>
+          </div>
+
+          <div className="rounded-2xl border border-border bg-card p-6 space-y-4">
+            <p className="text-sm font-semibold text-foreground uppercase tracking-wide">Here's what we'll cover:</p>
+            <div className="space-y-2.5">
+              {[
+                { icon: "📄", label: "Experience Details", desc: "Name, description, and targeted grade levels", section: "input" },
+                { icon: "🎯", label: "Primary Practice", desc: "Select the core practice area — this filters your model results", section: "input" },
+                { icon: "🧩", label: "Supporting Practices", desc: "Additional practices that complement your primary focus", section: "input" },
+                { icon: "📊", label: "Outcomes & LEAPs", desc: "What students should achieve and the learning experiences that get them there", section: "input" },
+                { icon: "⚙️", label: "System Elements", desc: "Operational questions about scheduling, budget, staffing, and more", section: "input" },
+              ].map((item) => (
+                <div key={item.label} className="flex items-start gap-3 p-3 rounded-xl bg-muted/30">
+                  <span className="text-lg shrink-0 mt-0.5">{item.icon}</span>
+                  <div>
+                    <p className="text-sm font-medium text-foreground">{item.label}</p>
+                    <p className="text-xs text-muted-foreground leading-relaxed">{item.desc}</p>
+                  </div>
+                </div>
+              ))}
+
+              <div className="pt-2 pb-1">
+                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Then you'll receive:</p>
+              </div>
+
+              {[
+                { icon: "📋", label: "Experience Summary", desc: "A structured overview of everything you've defined — exportable and shareable" },
+                { icon: "✨", label: "Model Recommendations", desc: "Ranked models matched to your specific inputs and preferences" },
+                { icon: "🤖", label: "AI Advisor", desc: "Chat with AI to explore individual models and ask detailed questions" },
+              ].map((item) => (
+                <div key={item.label} className="flex items-start gap-3 p-3 rounded-xl bg-primary/5 border border-primary/10">
+                  <span className="text-lg shrink-0 mt-0.5">{item.icon}</span>
+                  <div>
+                    <p className="text-sm font-medium text-foreground">{item.label}</p>
+                    <p className="text-xs text-muted-foreground leading-relaxed">{item.desc}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-primary/20 bg-primary/5 px-5 py-4 space-y-2">
+            <p className="text-sm font-semibold text-primary">A note on scoring</p>
+            <p className="text-sm text-foreground/80 leading-relaxed">
+              If you select a primary practice, we'll filter model recommendations to those that focus on that practice.
+              Beyond that, our recommendations are based on the degree to which your targeted outcomes and LEAPs align with the models in our database.
+              We'll also ask system-level questions to exclude models that won't fit your operational structure.
+            </p>
+          </div>
+
+          <div className="flex justify-center pt-2">
+            <button
+              type="button"
+              onClick={onContinue}
+              className="px-8 py-3 rounded-xl bg-primary text-primary-foreground font-semibold text-base shadow-md hover:bg-primary/90 transition-colors"
+            >
+              Let's get started →
+            </button>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // v2: Experience Definition Panel (Path B Step 2)
 // ---------------------------------------------------------------------------
 //
@@ -1259,9 +1383,8 @@ function ExperienceDefinitionPanel({ sessionId, stepData, onConfirm }: Experienc
   const qc = useQueryClient();
   const { toast } = useToast();
 
-  // Always open at Experience Details (screen 2) when remounting — upload (screen 1)
-  // is a one-time action and users re-entering via chevron or transition-back want details.
-  const [screen, setScreen] = useState<ExperienceScreen>(2);
+  // Start on Upload (screen 1) so users know it exists when entering Define Experience.
+  const [screen, setScreen] = useState<ExperienceScreen>(1);
   const practicesQuestionnaireRef = useRef<PracticesQuestionnaireHandle>(null);
   const [animKey, setAnimKey] = useState(0);
   const [isSaving, setIsSaving] = useState(false);
@@ -1755,9 +1878,9 @@ function ExperienceDefinitionPanel({ sessionId, stepData, onConfirm }: Experienc
       <div className="flex-shrink-0 px-8 pt-10 pb-4 max-w-5xl mx-auto w-full">{subIndicator}</div>
 
       {screen <= 3 ? (
-        <div className={cn("flex-1", screen === 1 ? "relative" : "flex flex-col items-start justify-start px-8 pb-24")}>
+        <div className={cn("flex-1", screen === 1 ? "relative" : "flex flex-col items-center justify-start px-8 pb-24")}>
           <div
-            className={cn(screen !== 1 && "w-full max-w-5xl space-y-8")}
+            className={cn(screen !== 1 && "w-full max-w-5xl mx-auto space-y-8")}
             key={animKey}
             style={{ animation: "schoolFadeIn 0.25s ease forwards" }}
           >
@@ -2143,7 +2266,7 @@ function SchoolContextQuestionnaire({ sessionId, stepData, onConfirm }: SchoolCo
 
   const anyPreFilled = !!(prefilled.district || prefilled.state || (prefilled.grade_bands?.length || prefilled.grade_band));
 
-  const goToScreen = (n: 1 | 2 | 3 | 4) => {
+  const goToScreen = (n: 1 | 2 | 3) => {
     setScreen(n);
     setAnimKey((k) => k + 1);
   };
@@ -2324,14 +2447,14 @@ function SchoolContextQuestionnaire({ sessionId, stepData, onConfirm }: SchoolCo
               </div>
             )}
 
-            {/* ── Screen 3: School Context (3-card layout) ── */}
+            {/* ── Screen 3: School Context (single write box + record) ── */}
             {screen === 3 && (
               <div className="space-y-6">
                 <div className="space-y-1">
                   <h1 className="text-4xl font-display font-bold text-foreground leading-tight">
                     Tell us about your community
                   </h1>
-                  <p className="text-muted-foreground text-base">Use any combination of the options below.</p>
+                  <p className="text-muted-foreground text-base">Share context about your school community below.</p>
                 </div>
 
                 {/* Consider addressing */}
@@ -2347,105 +2470,51 @@ function SchoolContextQuestionnaire({ sessionId, stepData, onConfirm }: SchoolCo
                   </ul>
                 </div>
 
-                {/* 3-column cards */}
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 items-start">
-
-                  {/* Write it */}
-                  <div className="rounded-xl border border-border bg-card flex flex-col h-full min-h-[300px]">
-                    <div className="flex items-center gap-2 px-4 pt-4 pb-3 border-b border-border">
-                      <div className="w-7 h-7 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
-                        <svg className="w-4 h-4 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536M9 13l6.586-6.586a2 2 0 112.828 2.828L11.828 15.828a4 4 0 01-1.414.828l-3.414.828.828-3.414a4 4 0 01.828-1.414z" />
-                        </svg>
-                      </div>
-                      <p className="text-sm font-semibold text-foreground">Write it</p>
-                    </div>
-                    <div className="p-4 flex-1 flex flex-col">
-                      <Textarea
-                        value={context}
-                        onChange={(e) => setContext(e.target.value)}
-                        placeholder="Describe the community context, demographics, partnerships, or policies relevant to this experience..."
-                        className="text-sm flex-1 resize-none min-h-[200px]"
-                      />
-                    </div>
-                  </div>
-
-                  {/* Talk it out */}
-                  <div className="rounded-xl border border-border bg-card flex flex-col min-h-[300px]">
-                    <div className="flex items-center gap-2 px-4 pt-4 pb-3 border-b border-border">
-                      <div className="w-7 h-7 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
-                        <MessageSquare className="w-4 h-4 text-primary" />
-                      </div>
-                      <p className="text-sm font-semibold text-foreground">Talk it out</p>
-                    </div>
-                    <div className="p-4 flex-1 flex flex-col items-center justify-center gap-4 py-6">
-                      {recordingState === "idle" && (
-                        <button type="button" onClick={handleStartRecording}
-                          className="w-16 h-16 rounded-full bg-red-50 border-2 border-red-200 flex items-center justify-center hover:bg-red-100 hover:border-red-300 transition-colors group">
-                          <div className="w-5 h-5 rounded-full bg-red-500 group-hover:scale-110 transition-transform" />
-                        </button>
-                      )}
-                      {recordingState === "recording" && (
-                        <button type="button" onClick={handleStopRecording}
-                          className="w-16 h-16 rounded-full bg-red-100 border-2 border-red-400 flex items-center justify-center hover:bg-red-200 transition-colors">
-                          <div className="w-5 h-5 rounded-md bg-red-600" />
-                        </button>
-                      )}
-                      {recordingState === "transcribing" && (
-                        <div className="w-16 h-16 rounded-full bg-primary/10 border-2 border-primary/20 flex items-center justify-center">
-                          <Loader2 className="w-6 h-6 text-primary animate-spin" />
+                {/* Single write box with inline record button */}
+                <div className="rounded-xl border border-border bg-card overflow-hidden">
+                  <Textarea
+                    value={context}
+                    onChange={(e) => setContext(e.target.value)}
+                    placeholder="Describe the community context, demographics, partnerships, or policies relevant to this experience..."
+                    className="text-sm resize-none min-h-[180px] border-0 focus-visible:ring-0 rounded-none shadow-none"
+                  />
+                  <div className="border-t border-border px-4 py-2.5 flex items-center gap-3 bg-muted/20">
+                    {recordingState === "idle" && (
+                      <button
+                        type="button"
+                        onClick={handleStartRecording}
+                        className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors group"
+                      >
+                        <div className="w-6 h-6 rounded-full bg-red-50 border border-red-200 flex items-center justify-center group-hover:border-red-300 group-hover:bg-red-100 transition-colors">
+                          <div className="w-2.5 h-2.5 rounded-full bg-red-500" />
                         </div>
-                      )}
-                      {recordingState === "idle" && <p className="text-xs text-muted-foreground text-center">Tap to start recording</p>}
-                      {recordingState === "recording" && (
-                        <div className="flex flex-col items-center gap-2">
-                          <div className="flex items-center gap-1">
-                            {[...Array(7)].map((_, i) => (
-                              <div key={i} className="w-1 bg-red-400 rounded-full animate-pulse"
-                                style={{ height: `${10 + (i % 4) * 5}px`, animationDelay: `${i * 80}ms` }} />
-                            ))}
-                          </div>
-                          <p className="text-xs text-red-600 font-medium">Recording... tap to stop</p>
-                        </div>
-                      )}
-                      {recordingState === "transcribing" && <p className="text-xs text-muted-foreground text-center">Transcribing...</p>}
-                    </div>
-                  </div>
-
-                  {/* Upload docs */}
-                  <div className="rounded-xl border border-border bg-card flex flex-col min-h-[300px]">
-                    <div className="flex items-center gap-2 px-4 pt-4 pb-3 border-b border-border">
-                      <div className="w-7 h-7 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
-                        <CloudUpload className="w-4 h-4 text-primary" />
-                      </div>
-                      <div>
-                        <p className="text-sm font-semibold text-foreground">Upload docs</p>
-                        <p className="text-xs text-muted-foreground">PDF, Word, or text files</p>
-                      </div>
-                    </div>
-                    <div className="p-4 flex-1 flex flex-col gap-3">
-                      <input ref={contextDocInputRef} type="file" accept=".pdf,.doc,.docx,.txt" className="hidden" onChange={handleContextDocUpload} />
-                      <button type="button" onClick={() => contextDocInputRef.current?.click()} disabled={isUploadingDoc}
-                        className="flex-1 flex flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed border-border hover:border-primary/40 hover:bg-primary/5 transition-colors py-8 disabled:opacity-50">
-                        {isUploadingDoc ? (
-                          <><Loader2 className="w-7 h-7 text-primary animate-spin" /><p className="text-xs text-muted-foreground">Extracting content...</p></>
-                        ) : (
-                          <><CloudUpload className="w-7 h-7 text-muted-foreground/50" /><p className="text-xs text-muted-foreground text-center">Click to upload a document</p></>
-                        )}
+                        <span>Talk it out</span>
                       </button>
-                      {contextDocs.length > 0 && (
-                        <ul className="space-y-1">
-                          {contextDocs.map((d, i) => (
-                            <li key={i} className="flex items-center gap-2 text-xs text-muted-foreground">
-                              <Check className="w-3.5 h-3.5 text-green-500 shrink-0" />
-                              <span className="truncate">{d.name}</span>
-                            </li>
+                    )}
+                    {recordingState === "recording" && (
+                      <button
+                        type="button"
+                        onClick={handleStopRecording}
+                        className="flex items-center gap-2 text-sm text-red-600 font-medium"
+                      >
+                        <div className="w-6 h-6 rounded-full bg-red-100 border border-red-400 flex items-center justify-center animate-pulse">
+                          <div className="w-2.5 h-2.5 rounded-sm bg-red-600" />
+                        </div>
+                        <span>Recording — tap to stop</span>
+                        <div className="flex items-center gap-0.5 ml-1">
+                          {[...Array(5)].map((_, i) => (
+                            <div key={i} className="w-0.5 bg-red-400 rounded-full animate-pulse" style={{ height: `${8 + (i % 3) * 4}px`, animationDelay: `${i * 100}ms` }} />
                           ))}
-                        </ul>
-                      )}
-                    </div>
+                        </div>
+                      </button>
+                    )}
+                    {recordingState === "transcribing" && (
+                      <span className="flex items-center gap-2 text-sm text-muted-foreground">
+                        <Loader2 className="w-4 h-4 animate-spin text-primary" />
+                        Transcribing your recording...
+                      </span>
+                    )}
                   </div>
-
                 </div>
               </div>
             )}
@@ -6133,7 +6202,7 @@ function SystemElementsQuestionnaire({ sessionId, stepData, onConfirm }: SystemE
 
   const [groupIdx, setGroupIdx] = useState(0);
   const [questionIdx, setQuestionIdx] = useState(0);
-  const [isContext, setIsContext] = useState(false);
+  const [isContext, setIsContext] = useState(SYSTEM_ELEMENT_GROUPS[0].questions.length === 0);
   const [animKey, setAnimKey] = useState(0);
   const [isSaving, setIsSaving] = useState(false);
 
@@ -7396,7 +7465,7 @@ function DecisionFrameReview({ stepData, stepsCompleted, onGoToStep, onConfirm, 
             <div className="w-12 h-12 rounded-xl bg-primary/10 flex items-center justify-center mx-auto">
               <ClipboardCheck className="w-6 h-6 text-primary" />
             </div>
-            <h1 className="text-3xl font-display font-bold text-foreground">Decision Frame</h1>
+            <h1 className="text-3xl font-display font-bold text-foreground">Experience Summary</h1>
             <p className="text-base text-muted-foreground max-w-md mx-auto">
               Review your inputs before we match you with models. Edit any section if something needs adjusting.
             </p>
@@ -7554,7 +7623,7 @@ function DecisionFramePanel({ stepData, stepsCompleted }: { stepData: Record<str
       <Card className="border-dashed border-primary/30 bg-primary/5">
         <CardContent className="py-8 text-center">
           <ClipboardCheck className="w-8 h-8 text-primary mx-auto mb-3" />
-          <h3 className="text-base font-semibold text-foreground mb-1">Decision Frame</h3>
+          <h3 className="text-base font-semibold text-foreground mb-1">Experience Summary</h3>
           <p className="text-sm text-muted-foreground max-w-md mx-auto">
             Complete steps 1 through 5 first. The decision frame will synthesize all your inputs into a consolidated summary for review before generating recommendations.
           </p>
@@ -7617,7 +7686,7 @@ function DecisionFramePanel({ stepData, stepsCompleted }: { stepData: Record<str
       <CardHeader className="pb-3">
         <CardTitle className="text-base flex items-center gap-2">
           <ClipboardCheck className="w-5 h-5 text-primary" />
-          Decision Frame Summary
+          Experience Summary
         </CardTitle>
         <p className="text-xs text-muted-foreground">
           Review all inputs gathered from prior steps. Use the chat to confirm or adjust before generating recommendations.
@@ -7805,11 +7874,12 @@ interface ModelCardProps {
   stepData: Record<string, any>;
   sessionId: string;
   onExplore: (modelId: number) => void;
+  onAskAI: (modelId: number, topic: string) => void;
   isExploring: boolean;
   rank: number;
 }
 
-function ModelCard({ rec, stepData, sessionId, onExplore, isExploring, rank }: ModelCardProps) {
+function ModelCard({ rec, stepData, sessionId, onExplore, onAskAI, isExploring, rank }: ModelCardProps) {
   const [activePill, setActivePill] = useState<ActivePill>(null);
 
   const m = rec.model || {};
@@ -7892,9 +7962,17 @@ function ModelCard({ rec, stepData, sessionId, onExplore, isExploring, rank }: M
           </div>
         </div>
 
-        <p className="text-sm text-muted-foreground line-clamp-2 mb-4">
+        <p className="text-sm text-muted-foreground line-clamp-2 mb-2">
           {desc}{desc.length >= 150 ? "…" : ""}
         </p>
+        <button
+          type="button"
+          onClick={() => onAskAI(rec.modelId, "model:executive_summary")}
+          className="inline-flex items-center gap-1 text-[10px] font-medium text-primary hover:text-primary/80 transition-colors mb-3"
+        >
+          <Sparkles className="w-3 h-3" />
+          Ask AI about this model
+        </button>
 
         {/* Pill row */}
         <div className="flex flex-wrap gap-2 mb-3">
@@ -7946,19 +8024,34 @@ function ModelCard({ rec, stepData, sessionId, onExplore, isExploring, rank }: M
           <div className="mb-4 p-3 bg-muted/40 rounded-lg border border-border/50 animate-in fade-in slide-in-from-top-1 duration-150">
             {activePill === "outcomes" && (
               <>
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">Outcomes Alignment</p>
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Outcomes Alignment</p>
+                  <button type="button" onClick={() => onAskAI(rec.modelId, "alignment:outcomes")} className="inline-flex items-center gap-1 text-[10px] font-medium text-primary hover:text-primary/80 transition-colors">
+                    <Sparkles className="w-2.5 h-2.5" /> Ask AI
+                  </button>
+                </div>
                 <MatchList matches={outcomeMatches} />
               </>
             )}
             {activePill === "leaps" && (
               <>
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">LEAPs Alignment</p>
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">LEAPs Alignment</p>
+                  <button type="button" onClick={() => onAskAI(rec.modelId, "alignment:leaps")} className="inline-flex items-center gap-1 text-[10px] font-medium text-primary hover:text-primary/80 transition-colors">
+                    <Sparkles className="w-2.5 h-2.5" /> Ask AI
+                  </button>
+                </div>
                 <MatchList matches={leapMatches} />
               </>
             )}
             {activePill === "practices" && (
               <>
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">Practices Alignment</p>
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Practices Alignment</p>
+                  <button type="button" onClick={() => onAskAI(rec.modelId, "alignment:practices")} className="inline-flex items-center gap-1 text-[10px] font-medium text-primary hover:text-primary/80 transition-colors">
+                    <Sparkles className="w-2.5 h-2.5" /> Ask AI
+                  </button>
+                </div>
                 <MatchList matches={practiceMatches} />
               </>
             )}
@@ -7970,10 +8063,13 @@ function ModelCard({ rec, stepData, sessionId, onExplore, isExploring, rank }: M
                     {constraintFlags.map((flag: any, i: number) => (
                       <div key={i} className="flex items-start gap-2 text-xs">
                         <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
-                        <div>
+                        <div className="flex-1">
                           <span className="font-medium text-foreground">{flag.domain}:</span>{" "}
                           <span className="text-muted-foreground">{flag.detail}</span>
                         </div>
+                        <button type="button" onClick={() => onAskAI(rec.modelId, `watchout:${flag.domain}`)} className="inline-flex items-center gap-1 text-[10px] font-medium text-primary hover:text-primary/80 transition-colors shrink-0">
+                          <Sparkles className="w-2.5 h-2.5" /> Ask AI
+                        </button>
                       </div>
                     ))}
                   </div>
@@ -8000,15 +8096,172 @@ function ModelCard({ rec, stepData, sessionId, onExplore, isExploring, rank }: M
   );
 }
 
-// --- ModelChatPanel sub-component ---
-const CONVERSATION_STARTERS = [
-  "How well does this model align with our outcomes?",
-  "What does implementation typically look like?",
-  "What's the evidence base for this model?",
-  "What would practices look like in our school context?",
-  "What are the main watch-outs we should know about?",
-];
+// --- Topic Tree for guided chat ---
+const TOPIC_TREE = {
+  root: [
+    { id: "model", label: "Let's talk about the model", icon: "LayoutGrid" },
+    { id: "alignment", label: "Let's talk about our alignment", icon: "Target" },
+    { id: "watchouts", label: "Let's talk about watch outs", icon: "AlertTriangle" },
+  ],
+  model: [
+    { id: "model:executive_summary", label: "Executive Summary" },
+    { id: "model:practices", label: "Overview of Practices" },
+    { id: "model:outcomes", label: "Overview of Outcomes" },
+    { id: "model:leaps", label: "Overview of LEAPs" },
+  ],
+  alignment: [
+    { id: "alignment:overall", label: "Overall alignment" },
+    { id: "alignment:outcomes", label: "Alignment on Outcomes" },
+    { id: "alignment:leaps", label: "Alignment on LEAPs" },
+    { id: "alignment:practices", label: "Alignment on Practices" },
+  ],
+} as const;
 
+const TOPIC_LABELS: Record<string, string> = {
+  "model:executive_summary": "Give me an executive summary of this model.",
+  "model:practices": "Tell me about this model's practices.",
+  "model:outcomes": "Tell me about this model's outcomes.",
+  "model:leaps": "Tell me about this model's LEAPs.",
+  "alignment:overall": "Let's discuss our overall alignment with this model.",
+  "alignment:outcomes": "Let's discuss our alignment on outcomes.",
+  "alignment:leaps": "Let's discuss our alignment on LEAPs.",
+  "alignment:practices": "Let's discuss our alignment on practices.",
+};
+
+function TopicTreeSelector({
+  onSelectTopic,
+  constraintFlags,
+  forceBranch,
+  onClearForceBranch,
+  startExpanded = true,
+}: {
+  onSelectTopic: (topic: string) => void;
+  constraintFlags: { domain: string; detail: string }[];
+  forceBranch?: string | null;
+  onClearForceBranch?: () => void;
+  startExpanded?: boolean;
+}) {
+  const [isExpanded, setIsExpanded] = useState(startExpanded);
+  const [branch, setBranch] = useState<"root" | "model" | "alignment" | "watchouts">("root");
+
+  useEffect(() => {
+    if (forceBranch && (forceBranch === "model" || forceBranch === "alignment" || forceBranch === "watchouts")) {
+      setBranch(forceBranch);
+      setIsExpanded(true);
+      onClearForceBranch?.();
+    }
+  }, [forceBranch, onClearForceBranch]);
+
+  const handleSelectAndCollapse = (topic: string) => {
+    onSelectTopic(topic);
+    setIsExpanded(false);
+    setBranch("root");
+  };
+
+  if (!isExpanded) {
+    return (
+      <button
+        type="button"
+        onClick={() => { setIsExpanded(true); setBranch("root"); }}
+        className="w-full flex items-center justify-between px-3 py-2 text-xs text-muted-foreground hover:text-foreground transition-colors rounded-lg hover:bg-muted/30"
+      >
+        <span className="font-medium">Explore a topic</span>
+        <ChevronDown className="w-3.5 h-3.5" />
+      </button>
+    );
+  }
+
+  if (branch === "root") {
+    return (
+      <div className="space-y-2 pt-1">
+        <div className="flex items-center justify-between mb-1">
+          <p className="text-[10px] text-muted-foreground font-medium">What would you like to explore?</p>
+          <button type="button" onClick={() => { setIsExpanded(false); setBranch("root"); }} className="text-[10px] text-muted-foreground hover:text-foreground transition-colors">
+            <ChevronDown className="w-3.5 h-3.5 rotate-180" />
+          </button>
+        </div>
+        {TOPIC_TREE.root.map((item) => (
+          <button
+            key={item.id}
+            type="button"
+            onClick={() => {
+              if (item.id === "watchouts" && constraintFlags.length === 0) return;
+              setBranch(item.id as "model" | "alignment" | "watchouts");
+            }}
+            className={cn(
+              "w-full text-left text-xs p-2.5 rounded-lg border transition-colors leading-snug flex items-center gap-2.5",
+              item.id === "watchouts" && constraintFlags.length === 0
+                ? "border-border/50 bg-muted/10 text-muted-foreground/50 cursor-not-allowed"
+                : "border-border bg-muted/20 hover:bg-muted/50 text-foreground"
+            )}
+          >
+            {item.icon === "LayoutGrid" && <LayoutGrid className="w-4 h-4 text-primary shrink-0" />}
+            {item.icon === "Target" && <Target className="w-4 h-4 text-emerald-600 shrink-0" />}
+            {item.icon === "AlertTriangle" && <AlertTriangle className={cn("w-4 h-4 shrink-0", constraintFlags.length > 0 ? "text-amber-600" : "text-muted-foreground/40")} />}
+            <span>{item.label}</span>
+            {item.id === "watchouts" && constraintFlags.length === 0 && (
+              <span className="ml-auto text-[9px] text-muted-foreground/60">None flagged</span>
+            )}
+            {item.id === "watchouts" && constraintFlags.length > 0 && (
+              <span className="ml-auto text-[9px] text-amber-600 font-semibold">{constraintFlags.length}</span>
+            )}
+          </button>
+        ))}
+      </div>
+    );
+  }
+
+  if (branch === "watchouts") {
+    return (
+      <div className="space-y-2 pt-1">
+        <div className="flex items-center gap-2 mb-1">
+          <button type="button" onClick={() => setBranch("root")} className="text-[10px] text-muted-foreground hover:text-foreground transition-colors">&larr; Back</button>
+          <p className="text-[10px] text-muted-foreground">Which watch out do you want to focus on?</p>
+        </div>
+        {constraintFlags.map((flag, i) => (
+          <button
+            key={i}
+            type="button"
+            onClick={() => handleSelectAndCollapse(`watchout:${flag.domain}`)}
+            className="w-full text-left text-xs p-2.5 rounded-lg border border-border bg-muted/20 hover:bg-muted/50 text-foreground transition-colors leading-snug flex items-start gap-2"
+          >
+            <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
+            <div>
+              <span className="font-medium">{flag.domain}</span>
+              <span className="text-muted-foreground ml-1">— {flag.detail}</span>
+            </div>
+          </button>
+        ))}
+      </div>
+    );
+  }
+
+  const items = branch === "model" ? TOPIC_TREE.model : TOPIC_TREE.alignment;
+  const prompt = branch === "model"
+    ? "What aspect of the model would you like to explore?"
+    : "Which area of alignment would you like to explore?";
+
+  return (
+    <div className="space-y-2 pt-1">
+      <div className="flex items-center gap-2 mb-1">
+        <button type="button" onClick={() => setBranch("root")} className="text-[10px] text-muted-foreground hover:text-foreground transition-colors">&larr; Back</button>
+        <p className="text-[10px] text-muted-foreground">{prompt}</p>
+      </div>
+      {items.map((item) => (
+        <button
+          key={item.id}
+          type="button"
+          onClick={() => handleSelectAndCollapse(item.id)}
+          className="w-full text-left text-xs p-2.5 rounded-lg border border-border bg-muted/20 hover:bg-muted/50 text-foreground transition-colors leading-snug"
+        >
+          {item.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// --- ModelChatPanel sub-component ---
 interface ModelChatPanelProps {
   sessionId: string;
   exploredModelIds: number[];
@@ -8017,11 +8270,16 @@ interface ModelChatPanelProps {
   chatHistories: Record<number, LocalChatMessage[]>;
   pendingModelId: number | null;
   optimisticMessages: Record<number, string | null>;
+  activeTopic: string | null;
+  suggestedFollowUps: Record<number, string[]>;
+  forceBranch: string | null;
   onSwitchModel: (modelId: number) => void;
   onCloseTab: (modelId: number) => void;
   onClose: () => void;
-  onSendMessage: (modelId: number, message: string) => void;
+  onSendMessage: (modelId: number, message: string, topic?: string | null) => void;
+  onSetTopic: (topic: string | null) => void;
   onClearConversation: (modelId: number) => void;
+  onClearForceBranch: () => void;
 }
 
 function ModelChatPanel({
@@ -8032,11 +8290,16 @@ function ModelChatPanel({
   chatHistories,
   pendingModelId,
   optimisticMessages,
+  activeTopic,
+  suggestedFollowUps,
+  forceBranch,
   onSwitchModel,
   onCloseTab,
   onClose,
   onSendMessage,
+  onSetTopic,
   onClearConversation,
+  onClearForceBranch,
 }: ModelChatPanelProps) {
   const [input, setInput] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -8048,6 +8311,8 @@ function ModelChatPanel({
   const isStreaming = activeMessages.some(m => m.streaming);
   const isBusy = isPending || isStreaming;
   const optimisticMsg = optimisticMessages[activeChatModelId] ?? null;
+  const activeFollowUps = suggestedFollowUps[activeChatModelId] ?? [];
+  const constraintFlags: { domain: string; detail: string }[] = activeRec?.alignment?.constraintFlags || [];
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -8064,7 +8329,18 @@ function ModelChatPanel({
     const msg = input;
     setInput("");
     if (textareaRef.current) textareaRef.current.style.height = "auto";
-    onSendMessage(activeChatModelId, msg);
+    onSendMessage(activeChatModelId, msg, activeTopic);
+  };
+
+  const handleTopicSelect = (topic: string) => {
+    onSetTopic(topic);
+    const label = TOPIC_LABELS[topic];
+    if (label) {
+      onSendMessage(activeChatModelId, label, topic);
+    } else if (topic.startsWith("watchout:")) {
+      const domain = topic.slice("watchout:".length);
+      onSendMessage(activeChatModelId, `Let's discuss the watch out for ${domain}.`, topic);
+    }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -8159,24 +8435,23 @@ function ModelChatPanel({
         </div>
       )}
 
+      {/* Persistent topic branches */}
+      <div className="shrink-0 px-3 py-2 border-b border-border/50 bg-muted/10">
+        <TopicTreeSelector
+          onSelectTopic={handleTopicSelect}
+          constraintFlags={constraintFlags}
+          forceBranch={forceBranch}
+          onClearForceBranch={onClearForceBranch}
+          startExpanded={activeMessages.length === 0}
+        />
+      </div>
+
       {/* Message thread */}
       <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto p-3 space-y-3 scroll-smooth">
         {activeMessages.length === 0 && !isBusy ? (
-          <div className="space-y-3 pt-2">
-            <p className="text-xs text-muted-foreground text-center">Ask me anything about this model.</p>
-            <div className="space-y-1.5">
-              {CONVERSATION_STARTERS.map((s) => (
-                <button
-                  key={s}
-                  type="button"
-                  onClick={() => onSendMessage(activeChatModelId, s)}
-                  className="w-full text-left text-xs p-2.5 rounded-lg border border-border bg-muted/20 hover:bg-muted/50 text-foreground transition-colors leading-snug"
-                >
-                  {s}
-                </button>
-              ))}
-            </div>
-          </div>
+          <p className="text-[10px] text-muted-foreground text-center">
+            Ask anything about this model, or choose a topic above.
+          </p>
         ) : (
           <>
             {activeMessages.map((msg) => (
@@ -8202,7 +8477,6 @@ function ModelChatPanel({
                     : "bg-muted text-foreground rounded-tl-none border border-border/50"
                 )}>
                   {msg.streaming && !msg.content ? (
-                    /* Waiting for first token */
                     <span className="flex items-center gap-1">
                       <span className="w-1.5 h-1.5 bg-muted-foreground/40 rounded-full animate-bounce [animation-delay:-0.3s]" />
                       <span className="w-1.5 h-1.5 bg-muted-foreground/40 rounded-full animate-bounce [animation-delay:-0.15s]" />
@@ -8220,15 +8494,15 @@ function ModelChatPanel({
               </div>
             ))}
 
-            {/* Conversation starter chips — shown only right after the greeting finishes streaming */}
-            {activeMessages.length === 1 && activeMessages[0].role === "assistant" && !isBusy && (
+            {/* Suggested follow-up chips — shown after a topic-specific response completes */}
+            {activeFollowUps.length > 0 && !isBusy && activeMessages.length > 1 && (
               <div className="space-y-1.5 pt-1">
-                <p className="text-[10px] text-muted-foreground text-center">Suggested questions</p>
-                {CONVERSATION_STARTERS.map((s) => (
+                <p className="text-[10px] text-muted-foreground text-center">Suggested follow-ups</p>
+                {activeFollowUps.map((s) => (
                   <button
                     key={s}
                     type="button"
-                    onClick={() => onSendMessage(activeChatModelId, s)}
+                    onClick={() => onSendMessage(activeChatModelId, s, activeTopic)}
                     className="w-full text-left text-xs p-2.5 rounded-lg border border-border bg-muted/20 hover:bg-muted/50 text-foreground transition-colors leading-snug"
                   >
                     {s}
@@ -8251,8 +8525,8 @@ function ModelChatPanel({
         )}
       </div>
 
-      {/* Input */}
-      <div className="shrink-0 border-t border-border p-2 bg-white">
+      {/* Input + disclaimer */}
+      <div className="shrink-0 border-t border-border bg-white">
         <div className="flex items-end gap-1.5">
           <textarea
             ref={textareaRef}
@@ -8273,6 +8547,9 @@ function ModelChatPanel({
             <Send className="w-3.5 h-3.5" />
           </Button>
         </div>
+        <p className="text-[9px] text-muted-foreground text-center mt-1.5">
+          Model Advisor is AI-powered and can make mistakes. Please double-check responses.
+        </p>
       </div>
     </div>
   );
@@ -8365,9 +8642,11 @@ function RecommendationsView({ sessionId, stepData, forceRefreshKey = 0 }: { ses
   const [chatHistories, setChatHistories] = useState<Record<number, LocalChatMessage[]>>({});
   const [pendingModelId, setPendingModelId] = useState<number | null>(null);
   const [optimisticMessages, setOptimisticMessages] = useState<Record<number, string | null>>({});
+  const [activeTopic, setActiveTopic] = useState<string | null>(null);
+  const [suggestedFollowUps, setSuggestedFollowUps] = useState<Record<number, string[]>>({});
 
   // ---- Chat message sender (streaming) ----
-  const sendModelMessage = useCallback(async (modelId: number, message: string) => {
+  const sendModelMessage = useCallback(async (modelId: number, message: string, topic?: string | null) => {
     const isGreeting = message === "__greeting__";
     if (!isGreeting) {
       setOptimisticMessages(prev => ({ ...prev, [modelId]: message }));
@@ -8400,7 +8679,7 @@ function RecommendationsView({ sessionId, stepData, forceRefreshKey = 0 }: { ses
       const res = await fetch("/api/chat/step8/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId, message, modelId }),
+        body: JSON.stringify({ sessionId, message, modelId, ...(topic ? { topic } : {}) }),
         credentials: "include",
       });
 
@@ -8435,8 +8714,9 @@ function RecommendationsView({ sessionId, stepData, forceRefreshKey = 0 }: { ses
                   ),
                 };
               });
+            } else if (payload.suggestedFollowUps) {
+              setSuggestedFollowUps(prev => ({ ...prev, [modelId]: payload.suggestedFollowUps }));
             } else if (payload.done || payload.error) {
-              // Mark streaming complete
               setChatHistories(prev => {
                 const history = prev[modelId] ?? [];
                 return {
@@ -8495,8 +8775,38 @@ function RecommendationsView({ sessionId, stepData, forceRefreshKey = 0 }: { ses
     setActiveChatModelId(modelId);
   }, [exploredModelIds, chatHistories, sendModelMessage, sessionId]);
 
+  const [forceBranch, setForceBranch] = useState<string | null>(null);
+
+  const handleAskAI = useCallback((modelId: number, topic: string) => {
+    const existing = chatHistories[modelId] ?? [];
+    const isStale = existing.length > 0 && existing.some(m => m.modelId === undefined || m.modelId !== modelId);
+    if (isStale) {
+      setChatHistories(prev => { const n = { ...prev }; delete n[modelId]; return n; });
+    }
+    if (!exploredModelIds.includes(modelId)) {
+      setExploredModelIds(prev => [...prev, modelId]);
+    }
+    if (!prefetchedModels.current.has(modelId)) {
+      prefetchedModels.current.add(modelId);
+      fetch(`/api/sessions/${sessionId}/models/${modelId}/prefetch-research`, {
+        method: "POST",
+        credentials: "include",
+      }).catch(() => {});
+    }
+    setActiveChatModelId(modelId);
+
+    if (topic === "alignment" || topic === "model") {
+      setForceBranch(topic);
+    } else if (topic.startsWith("watchout:")) {
+      const domain = topic.slice("watchout:".length);
+      setActiveTopic(topic);
+      sendModelMessage(modelId, `Let's discuss the watch out for ${domain}.`, topic);
+    }
+  }, [exploredModelIds, chatHistories, sendModelMessage, sessionId]);
+
   const handleCloseChat = useCallback(() => {
     setActiveChatModelId(null);
+    setActiveTopic(null);
   }, []);
 
   const handleClearConversation = useCallback(async (modelId: number) => {
@@ -8633,6 +8943,7 @@ function RecommendationsView({ sessionId, stepData, forceRefreshKey = 0 }: { ses
                     stepData={stepData}
                     sessionId={sessionId}
                     onExplore={handleExploreModel}
+                    onAskAI={handleAskAI}
                     isExploring={activeChatModelId === rec.modelId}
                     rank={i + 1}
                   />
@@ -8695,11 +9006,16 @@ function RecommendationsView({ sessionId, stepData, forceRefreshKey = 0 }: { ses
               chatHistories={chatHistories}
               pendingModelId={pendingModelId}
               optimisticMessages={optimisticMessages}
+              activeTopic={activeTopic}
+              suggestedFollowUps={suggestedFollowUps}
+              forceBranch={forceBranch}
               onSwitchModel={setActiveChatModelId}
               onCloseTab={handleCloseTab}
               onClose={handleCloseChat}
               onSendMessage={sendModelMessage}
+              onSetTopic={setActiveTopic}
               onClearConversation={handleClearConversation}
+              onClearForceBranch={() => setForceBranch(null)}
             />
           </ResizablePanel>
         </>

@@ -16,7 +16,7 @@ import {
   type ScoringConfig, type InsertScoringConfig,
   type User,
 } from "@shared/schema";
-import { eq, desc, and, asc, inArray } from "drizzle-orm";
+import { eq, desc, and, asc, inArray, sql } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 
 export interface SessionSummary {
@@ -44,6 +44,7 @@ export interface IStorage {
   getAllModels(): Promise<Model[]>;
   getModel(id: number): Promise<Model | undefined>;
   createModel(model: InsertModel): Promise<Model>;
+  updateModelEnrichment(modelId: number, enrichedContent: Record<string, string>): Promise<Model>;
   syncModelsFromAirtable(newModels: InsertModel[]): Promise<Model[]>;
 
   // Sessions
@@ -183,13 +184,73 @@ export class DatabaseStorage implements IStorage {
     return newModel;
   }
 
+  async updateModelEnrichment(modelId: number, enrichedContent: Record<string, string>): Promise<Model> {
+    const [updated] = await db.update(models).set({
+      enrichedContent,
+      enrichedAt: new Date(),
+    }).where(eq(models.id, modelId)).returning();
+    return updated;
+  }
+
   async syncModelsFromAirtable(newModels: InsertModel[]): Promise<Model[]> {
     if (newModels.length === 0) {
       throw new Error("Airtable returned no models. Existing models were NOT modified to prevent data loss.");
     }
+
+    const existingModels = await db.select().from(models);
+
+    const byAirtableId = new Map<string, Model>();
+    const byNameLower = new Map<string, Model>();
+    for (const m of existingModels) {
+      if (m.airtableRecordId) byAirtableId.set(m.airtableRecordId, m);
+      byNameLower.set(m.name.trim().toLowerCase(), m);
+    }
+
+    const result: Model[] = [];
+    const matchedDbIds = new Set<number>();
+
+    for (const incoming of newModels) {
+      let existing: Model | undefined;
+
+      if (incoming.airtableRecordId) {
+        existing = byAirtableId.get(incoming.airtableRecordId);
+      }
+      if (!existing) {
+        existing = byNameLower.get(incoming.name.trim().toLowerCase());
+      }
+
+      if (existing) {
+        matchedDbIds.add(existing.id);
+        const [updated] = await db.update(models).set({
+          name: incoming.name,
+          grades: incoming.grades,
+          description: incoming.description,
+          link: incoming.link,
+          outcomeTypes: incoming.outcomeTypes,
+          keyPractices: incoming.keyPractices,
+          implementationSupports: incoming.implementationSupports,
+          imageUrl: incoming.imageUrl,
+          attributes: incoming.attributes,
+          airtableRecordId: incoming.airtableRecordId ?? existing.airtableRecordId,
+        }).where(eq(models.id, existing.id)).returning();
+        result.push(updated);
+      } else {
+        const [inserted] = await db.insert(models).values(incoming).returning();
+        result.push(inserted);
+      }
+    }
+
+    // Flag models no longer in Airtable (don't delete — preserve enrichment data).
+    // Models not matched remain in the DB untouched.
+    const unmatchedCount = existingModels.filter((m) => !matchedDbIds.has(m.id)).length;
+    if (unmatchedCount > 0) {
+      console.log(`[Airtable Sync] ${unmatchedCount} existing model(s) not found in Airtable — preserved in DB.`);
+    }
+
+    // Clear recommendations since model data changed
     await db.delete(recommendations);
-    await db.delete(models);
-    return await db.insert(models).values(newModels).returning();
+
+    return result;
   }
 
   // === SESSIONS ===

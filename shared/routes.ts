@@ -63,6 +63,7 @@ export const api = {
         stepNumber: z.number(),
         message: z.string(),
         modelId: z.number().optional(),
+        topic: z.string().optional(),
       }),
       responses: {
         200: stepChatResponseSchema,

@@ -100,7 +100,7 @@ export async function fetchModelsFromAirtable(options?: { baseId?: string; table
       if (cclOutcomes) attributes["outcomes_list"] = cclOutcomes;
       if (leaps) attributes["leaps_list"] = leaps;
 
-      // keyPractices = CCL Kit Activities high-level categories (e.g. "Academic Integration")
+      // keyPractices = CCL Kit Activities (individual practice names, e.g. "Self Exploration, Guided Inquiry")
       const keyPractices = normalizeToString(fields["CCL Kit Activities"]);
       if (keyPractices) attributes["practices_list"] = keyPractices;
 
@@ -123,6 +123,7 @@ export async function fetchModelsFromAirtable(options?: { baseId?: string; table
         keyPractices,
         implementationSupports: "",
         attributes,
+        airtableRecordId: record.id,
       });
     }
 

@@ -12,8 +12,9 @@ This single route handles ALL step chat, including Step 8. Step 8 behavior is ga
 
 **Client:** `client/src/pages/WorkflowV2.tsx`
 - `ModelConversationPanel` — outer layout, model list, chat panel toggle
-- `ModelChatPanel` — the actual chat UI for a single model (~line 7982)
-- `CONVERSATION_STARTERS` — hardcoded list of opening prompts (~line 7959)
+- `ModelChatPanel` — the actual chat UI for a single model (includes topic tree)
+- `TopicTreeSelector` — three-branch guided topic selection component
+- `TOPIC_TREE` / `TOPIC_LABELS` — topic tree structure and human-readable labels
 
 **Clear conversation route:** `DELETE /api/sessions/:sessionId/chat/model-conversation/:modelId` (~line 966)
 
@@ -51,37 +52,49 @@ This means model ID 42 stores its chat at virtual step 8042. Different models ne
 
 **Option 2 (change the default):** Edit `server/prompts.ts`, find `getDefaultStepPrompts()`, modify the entry for step 8.
 
-## How to add model enrichment as first-pass context (open requirement)
+## Model enrichment as first-pass context
 
-Once model enrichment is implemented (see `docs/prds/07-admin-knowledge-base.md`), inject enrichment data before the web research block in `server/routes.ts`:
+The enrichment pipeline pre-collects detailed, structured content about each model from their website. Enrichment data is stored in `models.enrichedContent` (JSONB) and `models.enrichedAt` (timestamp). The full specification lives in:
 
-```typescript
-// In the step 8 block (~line 436), after building selectedModelContext from the model record:
-const enrichmentData = selectedModel.enrichment as Record<string, any> | null;
-if (enrichmentData) {
-  selectedModelContext += `\n\n=== MODEL ENRICHMENT SUMMARY ===\n${JSON.stringify(enrichmentData, null, 2)}`;
-  // Skip web research for greeting if enrichment exists
-  modelWebContent = enrichmentData.summary || "";
-}
-```
+**→ See `.cursor/skills/model-enrichment/SKILL.md`**
 
-The goal: if enrichment data exists, use it as the first-pass context and skip the background web search for greeting messages (improving response speed). Web search can still be triggered on follow-up messages.
+### Context injection priority
 
-## How to add topic-based guided chat (open requirement)
+When enrichment data exists, it is the **primary context source** — injected before web research in the system prompt. Web search is a secondary fallback, triggered only when:
+- Enrichment is null (model not yet enriched)
+- The enrichment field for the current topic says "Not available from current sources"
+- The user explicitly asks for live/current information
 
-The open requirement in `docs/prds/05-model-exploration-ai-chat.md` describes per-topic guided flows (Outcomes, LEAPs, Practices, System Elements, Implementation).
+### Airtable sync preserves enrichment
 
-**Approach:**
+The sync uses a two-tier upsert (match by `airtableRecordId` first, then by name). Model DB IDs and enrichment data are never deleted during sync. See the enrichment skill for full details on the matching strategy.
+
+## Topic-based guided chat
+
+The full behavioral spec for the topic tree — branches, sub-branches, per-topic context injection, search strategies, executive summary format, Ask AI button routing, and tone — lives in a separate skill:
+
+**→ See `.cursor/skills/model-exploration-topics/SKILL.md`**
+
+Reference documents that define CCL taxonomy items (outcomes, LEAPs, practices, system elements) live in `docs/reference-docs/`. These are used as deterministic context injection (by `referenceType`) rather than embedding-based RAG when the user is in a topic-specific flow.
+
+**Implementation approach:**
 1. Add a `topic` field to the chat request payload (`api.chat.stepAdvisor.input` in `shared/routes.ts`)
-2. In the server route, build a topic-specific system prompt addendum based on `topic` + the user's relevant `stepData` for that topic
-3. In `ModelChatPanel`, render topic tabs/buttons that set the active topic and send it with each message
-4. For each topic, write a guided question sequence (array of strings) that the AI follows; inject the sequence into the system prompt
+2. In the server route, check the `topic` field and retrieve the appropriate reference docs by `referenceType` + build a topic-specific system prompt addendum
+3. Replace `CONVERSATION_STARTERS` in `ModelChatPanel` with the three-card topic tree UI
+4. Add "Ask AI" buttons to the model card (alignment section, each watch out row, model details) that open the chat panel positioned at the corresponding branch
 
-## How conversation starters work
+## How the topic tree works
 
-`CONVERSATION_STARTERS` in `WorkflowV2.tsx` (~line 7959) is a hardcoded array of strings shown as clickable chips when a model's chat is first opened. Clicking one sends it as the user's first message.
+The flat `CONVERSATION_STARTERS` array has been replaced by a `TopicTreeSelector` component that presents a three-level guided tree:
 
-To update starters: edit the array directly. To make them dynamic (e.g., tailored to the user's selected aims), pass `stepData` into `ModelChatPanel` and generate starters from the user's top-priority outcomes or practices.
+- **Level 0:** Three cards — "Let's talk about the model", "Let's talk about our alignment", "Let's talk about watch outs"
+- **Branch 1 (Model):** Executive Summary, Overview of Practices, Overview of Outcomes, Overview of LEAPs
+- **Branch 2 (Alignment):** Overall alignment, Alignment on Outcomes, Alignment on LEAPs, Alignment on Practices
+- **Branch 3 (Watch Outs):** Lists the user's specific constraint flags from alignment data
+
+The topic tree is shown both in the empty chat state and after the greeting message finishes streaming. Selecting a topic sends a pre-formed message with the `topic` field to the backend for topic-aware context injection.
+
+"Ask AI" buttons on the model card open the chat panel positioned at the relevant branch (alignment section → Branch 2, each watchout → skips to that specific watchout, model details → Branch 1).
 
 ## Key data locations
 
@@ -92,4 +105,6 @@ To update starters: edit the array directly. To make them dynamic (e.g., tailore
 | Chat history | `step_conversations` table, `stepNumber = 8000 + modelId` |
 | System prompt (default) | `server/prompts.ts` → `getDefaultStepPrompts()[8]` |
 | System prompt (admin override) | `step_advisor_configs` table, `stepNumber = 8` |
-| Conversation starters | `WorkflowV2.tsx` → `CONVERSATION_STARTERS` constant |
+| Topic tree UI | `WorkflowV2.tsx` → `TopicTreeSelector`, `TOPIC_TREE`, `TOPIC_LABELS` |
+| Topic prompt functions | `server/prompts.ts` → `getTopicPromptAddendum()`, `getTopicReferenceTypes()`, `getTopicWebSearchQuery()` |
+| Reference documents | `docs/reference-docs/` (outcomes, LEAPs, practices, system elements PDFs) |
