@@ -7,6 +7,12 @@ export const users = pgTable("users", {
   id: serial("id").primaryKey(),
   email: text("email").notNull().unique(),
   passwordHash: text("password_hash").notNull(),
+  /** Set when the user completes email verification (magic link or code). */
+  emailVerifiedAt: timestamp("email_verified_at"),
+  emailVerificationTokenHash: text("email_verification_token_hash"),
+  emailVerificationCodeHash: text("email_verification_code_hash"),
+  emailVerificationExpiresAt: timestamp("email_verification_expires_at"),
+  emailVerificationSentAt: timestamp("email_verification_sent_at"),
   createdAt: timestamp("created_at").defaultNow(),
 });
 // === WORKFLOW STEP DEFINITIONS ===

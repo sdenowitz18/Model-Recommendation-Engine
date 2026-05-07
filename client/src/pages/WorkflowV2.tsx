@@ -5460,11 +5460,11 @@ function TaxonomySelectionPanel({ sessionId, stepNumber, stepData, config, pendi
             <p className="text-sm text-muted-foreground max-w-md mx-auto">
               An admin needs to add taxonomy items for this step first. Go to Settings to configure them, or upload knowledge base documents to auto-extract items.
             </p>
-            <Link href="/admin/settings">
-              <Button variant="outline" size="sm" className="mt-4">
+            <Button variant="outline" size="sm" className="mt-4" asChild>
+              <Link href="/admin/settings">
                 <Settings className="w-4 h-4 mr-2" /> Go to Settings
-              </Button>
-            </Link>
+              </Link>
+            </Button>
           </CardContent>
         </Card>
       </>
@@ -7965,15 +7965,6 @@ function ModelCard({ rec, stepData, sessionId, onExplore, onAskAI, isExploring, 
         <p className="text-sm text-muted-foreground line-clamp-2 mb-2">
           {desc}{desc.length >= 150 ? "…" : ""}
         </p>
-        <button
-          type="button"
-          onClick={() => onAskAI(rec.modelId, "model:executive_summary")}
-          className="inline-flex items-center gap-1 text-[10px] font-medium text-primary hover:text-primary/80 transition-colors mb-3"
-        >
-          <Sparkles className="w-3 h-3" />
-          Ask AI about this model
-        </button>
-
         {/* Pill row */}
         <div className="flex flex-wrap gap-2 mb-3">
           {/* Outcomes pill */}
@@ -8024,34 +8015,19 @@ function ModelCard({ rec, stepData, sessionId, onExplore, onAskAI, isExploring, 
           <div className="mb-4 p-3 bg-muted/40 rounded-lg border border-border/50 animate-in fade-in slide-in-from-top-1 duration-150">
             {activePill === "outcomes" && (
               <>
-                <div className="flex items-center justify-between mb-2">
-                  <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Outcomes Alignment</p>
-                  <button type="button" onClick={() => onAskAI(rec.modelId, "alignment:outcomes")} className="inline-flex items-center gap-1 text-[10px] font-medium text-primary hover:text-primary/80 transition-colors">
-                    <Sparkles className="w-2.5 h-2.5" /> Ask AI
-                  </button>
-                </div>
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">Outcomes Alignment</p>
                 <MatchList matches={outcomeMatches} />
               </>
             )}
             {activePill === "leaps" && (
               <>
-                <div className="flex items-center justify-between mb-2">
-                  <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">LEAPs Alignment</p>
-                  <button type="button" onClick={() => onAskAI(rec.modelId, "alignment:leaps")} className="inline-flex items-center gap-1 text-[10px] font-medium text-primary hover:text-primary/80 transition-colors">
-                    <Sparkles className="w-2.5 h-2.5" /> Ask AI
-                  </button>
-                </div>
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">LEAPs Alignment</p>
                 <MatchList matches={leapMatches} />
               </>
             )}
             {activePill === "practices" && (
               <>
-                <div className="flex items-center justify-between mb-2">
-                  <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Practices Alignment</p>
-                  <button type="button" onClick={() => onAskAI(rec.modelId, "alignment:practices")} className="inline-flex items-center gap-1 text-[10px] font-medium text-primary hover:text-primary/80 transition-colors">
-                    <Sparkles className="w-2.5 h-2.5" /> Ask AI
-                  </button>
-                </div>
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">Practices Alignment</p>
                 <MatchList matches={practiceMatches} />
               </>
             )}
@@ -8100,32 +8076,39 @@ function ModelCard({ rec, stepData, sessionId, onExplore, onAskAI, isExploring, 
 const TOPIC_TREE = {
   root: [
     { id: "model", label: "Let's talk about the model", icon: "LayoutGrid" },
-    { id: "alignment", label: "Let's talk about our alignment", icon: "Target" },
     { id: "watchouts", label: "Let's talk about watch outs", icon: "AlertTriangle" },
   ],
   model: [
     { id: "model:executive_summary", label: "Executive Summary" },
-    { id: "model:practices", label: "Overview of Practices" },
-    { id: "model:outcomes", label: "Overview of Outcomes" },
-    { id: "model:leaps", label: "Overview of LEAPs" },
-  ],
-  alignment: [
-    { id: "alignment:overall", label: "Overall alignment" },
-    { id: "alignment:outcomes", label: "Alignment on Outcomes" },
-    { id: "alignment:leaps", label: "Alignment on LEAPs" },
-    { id: "alignment:practices", label: "Alignment on Practices" },
+    { id: "model:summary", label: "Program Overview" },
+    { id: "model:core_approach", label: "Core Approach" },
+    { id: "model:resources_provided", label: "Resources Provided" },
+    { id: "model:impact", label: "Impact" },
+    { id: "model:cost_and_access", label: "Cost & Access" },
+    { id: "model:pd_requirements", label: "Professional Development Requirements" },
+    { id: "model:technology_needs", label: "Technology Needs" },
+    { id: "model:scheduling_impact", label: "Scheduling Impact" },
+    { id: "model:off_site_learning", label: "Off-Site Learning" },
+    { id: "model:partnerships", label: "Partnerships" },
+    { id: "model:family_involvement", label: "Family Involvement" },
+    { id: "model:data_sharing", label: "Data Sharing" },
   ],
 } as const;
 
 const TOPIC_LABELS: Record<string, string> = {
   "model:executive_summary": "Give me an executive summary of this model.",
-  "model:practices": "Tell me about this model's practices.",
-  "model:outcomes": "Tell me about this model's outcomes.",
-  "model:leaps": "Tell me about this model's LEAPs.",
-  "alignment:overall": "Let's discuss our overall alignment with this model.",
-  "alignment:outcomes": "Let's discuss our alignment on outcomes.",
-  "alignment:leaps": "Let's discuss our alignment on LEAPs.",
-  "alignment:practices": "Let's discuss our alignment on practices.",
+  "model:summary": "Tell me about this program.",
+  "model:core_approach": "How does this program actually work?",
+  "model:resources_provided": "What resources does this program provide?",
+  "model:impact": "What is the impact of this program?",
+  "model:cost_and_access": "What does this program cost and how do we access it?",
+  "model:pd_requirements": "What professional development is required?",
+  "model:technology_needs": "What technology does this program require?",
+  "model:scheduling_impact": "How does this program affect our schedule?",
+  "model:off_site_learning": "Does this program require off-site learning?",
+  "model:partnerships": "Does this program require partnerships?",
+  "model:family_involvement": "Does this program require family involvement?",
+  "model:data_sharing": "What is this program's data sharing policy?",
 };
 
 function TopicTreeSelector({
@@ -8142,10 +8125,10 @@ function TopicTreeSelector({
   startExpanded?: boolean;
 }) {
   const [isExpanded, setIsExpanded] = useState(startExpanded);
-  const [branch, setBranch] = useState<"root" | "model" | "alignment" | "watchouts">("root");
+  const [branch, setBranch] = useState<"root" | "model" | "watchouts">("root");
 
   useEffect(() => {
-    if (forceBranch && (forceBranch === "model" || forceBranch === "alignment" || forceBranch === "watchouts")) {
+    if (forceBranch && (forceBranch === "model" || forceBranch === "watchouts")) {
       setBranch(forceBranch);
       setIsExpanded(true);
       onClearForceBranch?.();
@@ -8186,7 +8169,7 @@ function TopicTreeSelector({
             type="button"
             onClick={() => {
               if (item.id === "watchouts" && constraintFlags.length === 0) return;
-              setBranch(item.id as "model" | "alignment" | "watchouts");
+              setBranch(item.id as "model" | "watchouts");
             }}
             className={cn(
               "w-full text-left text-xs p-2.5 rounded-lg border transition-colors leading-snug flex items-center gap-2.5",
@@ -8196,7 +8179,6 @@ function TopicTreeSelector({
             )}
           >
             {item.icon === "LayoutGrid" && <LayoutGrid className="w-4 h-4 text-primary shrink-0" />}
-            {item.icon === "Target" && <Target className="w-4 h-4 text-emerald-600 shrink-0" />}
             {item.icon === "AlertTriangle" && <AlertTriangle className={cn("w-4 h-4 shrink-0", constraintFlags.length > 0 ? "text-amber-600" : "text-muted-foreground/40")} />}
             <span>{item.label}</span>
             {item.id === "watchouts" && constraintFlags.length === 0 && (
@@ -8236,10 +8218,8 @@ function TopicTreeSelector({
     );
   }
 
-  const items = branch === "model" ? TOPIC_TREE.model : TOPIC_TREE.alignment;
-  const prompt = branch === "model"
-    ? "What aspect of the model would you like to explore?"
-    : "Which area of alignment would you like to explore?";
+  const items = TOPIC_TREE.model;
+  const prompt = "What would you like to explore?";
 
   return (
     <div className="space-y-2 pt-1">
@@ -8747,12 +8727,8 @@ function RecommendationsView({ sessionId, stepData, forceRefreshKey = 0 }: { ses
     }
   }, [sessionId, toast]);
 
-  // Track which model IDs have already had their research pre-fetched this session
-  const prefetchedModels = useRef<Set<number>>(new Set());
-
   const handleExploreModel = useCallback((modelId: number) => {
     const existing = chatHistories[modelId] ?? [];
-    // Discard stale history if any message lacks a stamp (pre-fix era) or carries a different model ID
     const isStale = existing.length > 0 && existing.some(m => m.modelId === undefined || m.modelId !== modelId);
     if (isStale) {
       setChatHistories(prev => { const n = { ...prev }; delete n[modelId]; return n; });
@@ -8760,20 +8736,11 @@ function RecommendationsView({ sessionId, stepData, forceRefreshKey = 0 }: { ses
     if (!exploredModelIds.includes(modelId)) {
       setExploredModelIds(prev => [...prev, modelId]);
     }
-    // Fire prefetch so research is cached before the user's first real question
-    if (!prefetchedModels.current.has(modelId)) {
-      prefetchedModels.current.add(modelId);
-      fetch(`/api/sessions/${sessionId}/models/${modelId}/prefetch-research`, {
-        method: "POST",
-        credentials: "include",
-      }).catch(() => {}); // fire-and-forget
-    }
-    // Greet if no history (or just discarded stale history)
     if (!existing.length || isStale) {
       sendModelMessage(modelId, "__greeting__");
     }
     setActiveChatModelId(modelId);
-  }, [exploredModelIds, chatHistories, sendModelMessage, sessionId]);
+  }, [exploredModelIds, chatHistories, sendModelMessage]);
 
   const [forceBranch, setForceBranch] = useState<string | null>(null);
 
@@ -8786,23 +8753,16 @@ function RecommendationsView({ sessionId, stepData, forceRefreshKey = 0 }: { ses
     if (!exploredModelIds.includes(modelId)) {
       setExploredModelIds(prev => [...prev, modelId]);
     }
-    if (!prefetchedModels.current.has(modelId)) {
-      prefetchedModels.current.add(modelId);
-      fetch(`/api/sessions/${sessionId}/models/${modelId}/prefetch-research`, {
-        method: "POST",
-        credentials: "include",
-      }).catch(() => {});
-    }
     setActiveChatModelId(modelId);
 
-    if (topic === "alignment" || topic === "model") {
+    if (topic === "model") {
       setForceBranch(topic);
     } else if (topic.startsWith("watchout:")) {
       const domain = topic.slice("watchout:".length);
       setActiveTopic(topic);
       sendModelMessage(modelId, `Let's discuss the watch out for ${domain}.`, topic);
     }
-  }, [exploredModelIds, chatHistories, sendModelMessage, sessionId]);
+  }, [exploredModelIds, chatHistories, sendModelMessage]);
 
   const handleCloseChat = useCallback(() => {
     setActiveChatModelId(null);

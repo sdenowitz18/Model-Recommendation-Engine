@@ -16,8 +16,9 @@ import {
   type ScoringConfig, type InsertScoringConfig,
   type User,
 } from "@shared/schema";
-import { eq, desc, and, asc, inArray, sql } from "drizzle-orm";
+import { eq, desc, and, asc, inArray, sql, isNull } from "drizzle-orm";
 import bcrypt from "bcryptjs";
+import { buildCodeHash } from "./email-verification";
 
 export interface SessionSummary {
   sessionId: string;
@@ -35,10 +36,31 @@ export interface SessionSummary {
 
 export interface IStorage {
   // Auth / Users
-  createUserWithPassword(email: string, password: string): Promise<User>;
+  createUserWithPassword(
+    email: string,
+    password: string,
+    verification?: {
+      tokenHash: string;
+      code: string;
+      expiresAt: Date;
+      sentAt: Date;
+    },
+  ): Promise<User>;
   findUserByEmail(email: string): Promise<User | undefined>;
   getUserById(id: number): Promise<User | undefined>;
   verifyUserPassword(user: User, password: string): Promise<boolean>;
+  /** Legacy users created before email verification: mark verified when no pending token exists. */
+  backfillLegacyEmailVerified(): Promise<void>;
+  setEmailVerificationPending(
+    userId: number,
+    tokenHash: string,
+    codeHash: string,
+    expiresAt: Date,
+    sentAt: Date,
+  ): Promise<void>;
+  findUserByEmailVerificationTokenHash(tokenHash: string): Promise<User | undefined>;
+  verifyUserEmailById(userId: number): Promise<User | undefined>;
+  findLatestUnverifiedUserByEmailForResend(email: string): Promise<User | undefined>;
 
   // Models
   getAllModels(): Promise<Model[]>;
@@ -82,6 +104,7 @@ export interface IStorage {
   // Step Documents
   getStepDocuments(sessionId: number, stepNumber: number): Promise<StepDocument[]>;
   getAllStepDocuments(sessionId: number): Promise<StepDocument[]>;
+  getStepDocumentById(id: number): Promise<StepDocument | undefined>;
   addStepDocument(sessionId: number, stepNumber: number, fileName: string, fileContent: string, fileType: string): Promise<StepDocument>;
   deleteStepDocument(id: number): Promise<void>;
 
@@ -145,13 +168,43 @@ export interface IStorage {
 export class DatabaseStorage implements IStorage {
   // === AUTH / USERS ===
 
-  async createUserWithPassword(email: string, password: string): Promise<User> {
+  async createUserWithPassword(
+    email: string,
+    password: string,
+    verification?: {
+      tokenHash: string;
+      code: string;
+      expiresAt: Date;
+      sentAt: Date;
+    },
+  ): Promise<User> {
     const passwordHash = await bcrypt.hash(password, 12);
-    const [created] = await db.insert(users).values({
-      email: email.toLowerCase(),
-      passwordHash,
-    }).returning();
-    return created;
+    if (!verification) {
+      const [created] = await db.insert(users).values({
+        email: email.toLowerCase(),
+        passwordHash,
+      }).returning();
+      return created;
+    }
+    return await db.transaction(async (tx) => {
+      const [u] = await tx
+        .insert(users)
+        .values({
+          email: email.toLowerCase(),
+          passwordHash,
+          emailVerificationTokenHash: verification.tokenHash,
+          emailVerificationExpiresAt: verification.expiresAt,
+          emailVerificationSentAt: verification.sentAt,
+        })
+        .returning();
+      const codeHash = buildCodeHash(u.id, verification.code);
+      const [updated] = await tx
+        .update(users)
+        .set({ emailVerificationCodeHash: codeHash })
+        .where(eq(users.id, u.id))
+        .returning();
+      return updated;
+    });
   }
 
   async findUserByEmail(email: string): Promise<User | undefined> {
@@ -166,6 +219,75 @@ export class DatabaseStorage implements IStorage {
 
   async verifyUserPassword(user: User, password: string): Promise<boolean> {
     return bcrypt.compare(password, user.passwordHash);
+  }
+
+  async backfillLegacyEmailVerified(): Promise<void> {
+    await db
+      .update(users)
+      .set({
+        emailVerifiedAt: sql`COALESCE(${users.emailVerifiedAt}, ${users.createdAt})`,
+      })
+      .where(
+        and(
+          isNull(users.emailVerifiedAt),
+          isNull(users.emailVerificationTokenHash),
+          isNull(users.emailVerificationCodeHash),
+        ),
+      );
+  }
+
+  async setEmailVerificationPending(
+    userId: number,
+    tokenHash: string,
+    codeHash: string,
+    expiresAt: Date,
+    sentAt: Date,
+  ): Promise<void> {
+    await db
+      .update(users)
+      .set({
+        emailVerificationTokenHash: tokenHash,
+        emailVerificationCodeHash: codeHash,
+        emailVerificationExpiresAt: expiresAt,
+        emailVerificationSentAt: sentAt,
+      })
+      .where(eq(users.id, userId));
+  }
+
+  async findUserByEmailVerificationTokenHash(tokenHash: string): Promise<User | undefined> {
+    const [user] = await db
+      .select()
+      .from(users)
+      .where(eq(users.emailVerificationTokenHash, tokenHash));
+    return user;
+  }
+
+  async verifyUserEmailById(userId: number): Promise<User | undefined> {
+    const [updated] = await db
+      .update(users)
+      .set({
+        emailVerifiedAt: new Date(),
+        emailVerificationTokenHash: null,
+        emailVerificationCodeHash: null,
+        emailVerificationExpiresAt: null,
+        emailVerificationSentAt: null,
+      })
+      .where(eq(users.id, userId))
+      .returning();
+    return updated;
+  }
+
+  /** For resend: user must prove password in route; this just loads by email if unverified. */
+  async findLatestUnverifiedUserByEmailForResend(email: string): Promise<User | undefined> {
+    const [user] = await db
+      .select()
+      .from(users)
+      .where(
+        and(eq(users.email, email.toLowerCase()), isNull(users.emailVerifiedAt)),
+      )
+      .orderBy(desc(users.id))
+      .limit(1);
+    return user;
   }
 
   // === MODELS ===
@@ -520,6 +642,11 @@ export class DatabaseStorage implements IStorage {
     return await db.select().from(stepDocuments)
       .where(eq(stepDocuments.sessionId, sessionId))
       .orderBy(desc(stepDocuments.createdAt));
+  }
+
+  async getStepDocumentById(id: number): Promise<StepDocument | undefined> {
+    const [doc] = await db.select().from(stepDocuments).where(eq(stepDocuments.id, id));
+    return doc;
   }
 
   async addStepDocument(sessionId: number, stepNumber: number, fileName: string, fileContent: string, fileType: string): Promise<StepDocument> {

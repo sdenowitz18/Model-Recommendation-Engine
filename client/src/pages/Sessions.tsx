@@ -374,12 +374,14 @@ export default function Sessions() {
             </p>
           </div>
           <div className="flex items-center gap-2 shrink-0">
-            <Link href="/admin/settings">
-              <Button variant="outline" size="sm" className="gap-1.5">
-                <Settings className="w-4 h-4" />
-                Settings
+            {user?.isAdmin && (
+              <Button variant="outline" size="sm" className="gap-1.5" asChild>
+                <Link href="/admin/settings">
+                  <Settings className="w-4 h-4" />
+                  Settings
+                </Link>
               </Button>
-            </Link>
+            )}
             <Button
               className="gap-2 uppercase tracking-[0.1em] font-display font-bold text-xs"
               onClick={() => setShowNewDialog(true)}

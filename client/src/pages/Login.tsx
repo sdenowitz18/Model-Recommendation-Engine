@@ -15,6 +15,12 @@ export default function Login() {
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [registerSuccess, setRegisterSuccess] = useState(false);
+  const [registerInfo, setRegisterInfo] = useState<{
+    devNote?: string;
+    emailChannel?: string;
+  } | null>(null);
+  const [loginNeedsVerify, setLoginNeedsVerify] = useState(false);
 
   const authMutation = useMutation({
     mutationFn: async ({ email, password, mode }: { email: string; password: string; mode: Mode }) => {
@@ -25,21 +31,50 @@ export default function Login() {
         body: JSON.stringify({ email, password }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.message || "Something went wrong");
-      return data;
+      if (!res.ok) {
+        const err = new Error(
+          typeof data.message === "string" ? data.message : "Something went wrong",
+        ) as Error & { code?: string };
+        if (typeof data.code === "string") err.code = data.code;
+        throw err;
+      }
+      return { data, mode };
     },
-    onSuccess: (data) => {
-      qc.setQueryData(["auth-me"], data);
+    onSuccess: ({ data, mode }) => {
+      setLoginNeedsVerify(false);
+      if (mode === "register") {
+        setRegisterInfo({
+          devNote: typeof data.devNote === "string" ? data.devNote : undefined,
+          emailChannel: typeof data.emailChannel === "string" ? data.emailChannel : undefined,
+        });
+        setRegisterSuccess(true);
+        qc.setQueryData(["auth-me"], null);
+        return;
+      }
+      qc.setQueryData(["auth-me"], {
+        id: data.id,
+        email: data.email,
+        emailVerifiedAt: data.emailVerifiedAt,
+        isAdmin: data.isAdmin,
+      });
       navigate("/ccl");
     },
-    onError: (err: Error) => {
-      setError(err.message);
+    onError: (err: Error & { code?: string }) => {
+      setLoginNeedsVerify(err.code === "email_unverified");
+      if (err.code === "email_unverified") {
+        setError(
+          "This email is not verified yet. Open the verification page to enter your code or resend the link.",
+        );
+      } else {
+        setError(err.message);
+      }
     },
   });
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+    setLoginNeedsVerify(false);
     if (!email.trim() || !password) return;
     authMutation.mutate({ email: email.trim(), password, mode });
   };
@@ -47,6 +82,9 @@ export default function Login() {
   const switchMode = () => {
     setMode((m) => (m === "login" ? "register" : "login"));
     setError(null);
+    setRegisterSuccess(false);
+    setRegisterInfo(null);
+    setLoginNeedsVerify(false);
   };
 
   return (
@@ -77,6 +115,44 @@ export default function Login() {
         </div>
 
         <div className="bg-white border rounded-xl shadow-sm p-8">
+          {registerSuccess ? (
+            <div className="space-y-5 text-center">
+              <p className="t-eyebrow">Almost there</p>
+              <h1 className="font-display font-bold uppercase tracking-tight text-xl text-foreground">
+                {registerInfo?.emailChannel === "dev_console" ? "Next: verify your email" : "Check your email"}
+              </h1>
+              {registerInfo?.emailChannel === "dev_console" && registerInfo.devNote ? (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-3 text-left text-sm text-amber-950">
+                  <p className="font-medium mb-1">No email was sent (local dev)</p>
+                  <p className="text-amber-900/90">{registerInfo.devNote}</p>
+                  <p className="mt-2 text-xs text-amber-800/80">
+                    To get real Gmail delivery, add <code className="rounded bg-amber-100/80 px-1">RESEND_API_KEY</code> and{" "}
+                    <code className="rounded bg-amber-100/80 px-1">EMAIL_FROM</code> to <code className="rounded bg-amber-100/80 px-1">.env</code> and restart the server.
+                  </p>
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  We sent a verification link and code to{" "}
+                  <span className="text-foreground font-medium">{email.trim()}</span>.
+                </p>
+              )}
+              <Button
+                type="button"
+                className="w-full uppercase tracking-[0.12em] font-display font-bold text-xs"
+                onClick={() => navigate(`/verify-email?email=${encodeURIComponent(email.trim())}`)}
+              >
+                Enter code or open link
+              </Button>
+              <button
+                type="button"
+                onClick={() => { setRegisterSuccess(false); setRegisterInfo(null); setMode("login"); }}
+                className="text-xs font-display font-bold uppercase tracking-[0.1em] text-primary hover:underline"
+              >
+                Back to sign in
+              </button>
+            </div>
+          ) : (
+            <>
           <div className="mb-6 text-center">
             <p className="t-eyebrow mb-2">{mode === "login" ? "Welcome back" : "Get started"}</p>
             <h1 className="font-display font-bold uppercase tracking-tight text-2xl text-foreground">
@@ -130,7 +206,18 @@ export default function Login() {
             </div>
 
             {error && (
-              <p className="text-sm text-destructive">{error}</p>
+              <div className="space-y-2">
+                <p className="text-sm text-destructive">{error}</p>
+                {mode === "login" && email.trim() && loginNeedsVerify && (
+                  <button
+                    type="button"
+                    className="text-xs font-display font-bold uppercase tracking-[0.08em] text-primary hover:underline"
+                    onClick={() => navigate(`/verify-email?email=${encodeURIComponent(email.trim())}`)}
+                  >
+                    Open email verification
+                  </button>
+                )}
+              </div>
             )}
 
             <Button
@@ -157,6 +244,8 @@ export default function Login() {
               {mode === "login" ? "Create one" : "Sign in"}
             </button>
           </div>
+            </>
+          )}
         </div>
       </div>
     </div>

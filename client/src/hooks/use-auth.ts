@@ -3,6 +3,8 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 export interface AuthUser {
   id: number;
   email: string;
+  emailVerifiedAt: string | null;
+  isAdmin: boolean;
 }
 
 export function useAuth() {
@@ -30,10 +32,15 @@ export function useAuth() {
     },
   });
 
+  const isVerified = !!user?.emailVerifiedAt;
+
   return {
     user: user ?? null,
     isLoading,
-    isAuthenticated: !!user,
+    /** Session exists and email is verified (product access). */
+    isAuthenticated: !!user && isVerified,
+    /** Logged in per cookie, but email not verified yet. */
+    needsEmailVerification: !!user && !isVerified,
     logout: () => logoutMutation.mutate(),
     isLoggingOut: logoutMutation.isPending,
   };

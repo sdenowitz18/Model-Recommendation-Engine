@@ -9,6 +9,9 @@
     "start": "NODE_ENV=production node dist/index.cjs",
     "check": "tsc",
     "db:push": "drizzle-kit push",
+    "db:delete-user": "node --env-file=.env --import tsx script/delete-user-by-email.ts",
+    "db:export-enrichment": "node --env-file=.env --import tsx script/export-enrichment.ts",
+    "db:import-enrichment": "node --env-file=.env --import tsx script/import-enrichment-rebuilt.ts",
     "db:seed": "node --env-file=.env --import tsx server/seed-taxonomy.ts",
     "db:restore-defaults": "node --env-file=.env --import tsx server/restore-defaults.ts"
   },

@@ -4317,11 +4317,11 @@ function TaxonomySelectionPanel({ sessionId, stepNumber, stepData, config, pendi
             <p className="text-sm text-muted-foreground max-w-md mx-auto">
               An admin needs to add taxonomy items for this step first. Go to Settings to configure them, or upload knowledge base documents to auto-extract items.
             </p>
-            <Link href="/admin/settings">
-              <Button variant="outline" size="sm" className="mt-4">
+            <Button variant="outline" size="sm" className="mt-4" asChild>
+              <Link href="/admin/settings">
                 <Settings className="w-4 h-4 mr-2" /> Go to Settings
-              </Button>
-            </Link>
+              </Link>
+            </Button>
           </CardContent>
         </Card>
       </>

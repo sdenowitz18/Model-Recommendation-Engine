@@ -512,7 +512,6 @@ export function RecommendationsPathB({
   const [pendingModelId, setPendingModelId] = useState<number | null>(null);
   const [showExportModal, setShowExportModal] = useState(false);
   const [selectedExportModels, setSelectedExportModels] = useState<Set<number>>(new Set());
-  const prefetchedModels = useRef<Set<number>>(new Set());
 
   // Data fetching
   const { data: models = [], isLoading: isLoadingModels } = useQuery<any[]>({
@@ -650,34 +649,22 @@ export function RecommendationsPathB({
   }, [sessionId, toast]);
 
   const handleExploreModel = useCallback((modelId: number) => {
-    if (!prefetchedModels.current.has(modelId)) {
-      prefetchedModels.current.add(modelId);
-      fetch(`/api/sessions/${sessionId}/models/${modelId}/prefetch-research`, {
-        method: "POST", credentials: "include",
-      }).catch(() => {});
-    }
     const existing = chatHistories[modelId] ?? [];
     if (!existing.length) {
       sendModelMessage(modelId, "__greeting__");
     }
     setActiveTopic(null);
     setActiveModelId(modelId);
-  }, [chatHistories, sendModelMessage, sessionId]);
+  }, [chatHistories, sendModelMessage]);
 
   const handleAskAI = useCallback((modelId: number, topic: string) => {
-    if (!prefetchedModels.current.has(modelId)) {
-      prefetchedModels.current.add(modelId);
-      fetch(`/api/sessions/${sessionId}/models/${modelId}/prefetch-research`, {
-        method: "POST", credentials: "include",
-      }).catch(() => {});
-    }
     const existing = chatHistories[modelId] ?? [];
     if (!existing.length) {
       sendModelMessage(modelId, "__greeting__");
     }
     setActiveModelId(modelId);
 
-    if (topic === "alignment" || topic === "model") {
+    if (topic === "model") {
       setForceBranch(topic);
     } else if (topic.startsWith("watchout:")) {
       const domain = topic.replace("watchout:", "");
@@ -685,7 +672,7 @@ export function RecommendationsPathB({
       setActiveTopic(topic);
       sendModelMessage(modelId, prompt, topic);
     }
-  }, [chatHistories, sendModelMessage, sessionId]);
+  }, [chatHistories, sendModelMessage]);
 
   const handleBackToList = useCallback(() => setActiveModelId(null), []);
 
@@ -1060,12 +1047,6 @@ function ModelSplitView({
                 <div className="flex items-center gap-2 pb-2 border-b">
                   <Target className="w-5 h-5 text-[#104080]" />
                   <h2 className="text-lg font-bold font-display text-[#104080] flex-1">Your Alignment</h2>
-                  <button
-                    onClick={() => onAskAI("alignment")}
-                    className="flex items-center gap-1 text-[10px] font-semibold text-[#104080]/70 hover:text-[#104080] transition-colors px-2 py-1 rounded-md hover:bg-[#104080]/5"
-                  >
-                    <Sparkles className="w-3 h-3" /> Ask AI
-                  </button>
                 </div>
                 <p className="text-xs text-muted-foreground">Based on your decision frame.</p>
                 <div className="grid grid-cols-3 gap-3">
@@ -1105,12 +1086,6 @@ function ModelSplitView({
               <div className="flex items-center gap-2 pb-2 border-b">
                 <BookOpen className="w-5 h-5 text-[#104080]" />
                 <h2 className="text-lg font-bold font-display text-[#104080] flex-1">Model Details</h2>
-                <button
-                  onClick={() => onAskAI("model")}
-                  className="flex items-center gap-1 text-[10px] font-semibold text-[#104080]/70 hover:text-[#104080] transition-colors px-2 py-1 rounded-md hover:bg-[#104080]/5"
-                >
-                  <Sparkles className="w-3 h-3" /> Ask AI
-                </button>
               </div>
               <div className="grid md:grid-cols-3 gap-8">
                 <DetailList
@@ -1296,26 +1271,25 @@ const TOPIC_TREE: Record<string, { label: string; children: { key: string; label
     label: "What would you like to explore?",
     children: [
       { key: "model", label: "Let\u2019s talk about the model", prompt: "" },
-      { key: "alignment", label: "Let\u2019s talk about our alignment", prompt: "" },
       { key: "watchouts", label: "Let\u2019s talk about the watchouts", prompt: "" },
     ],
   },
   model: {
-    label: "What part of the model?",
+    label: "What would you like to explore?",
     children: [
-      { key: "model:executive_summary", label: "Give me an executive summary", prompt: "Give me a comprehensive executive summary of this model." },
-      { key: "model:practices_overview", label: "Overview of practices", prompt: "Give me an overview of the key practices this model uses." },
-      { key: "model:outcomes_overview", label: "Overview of outcomes", prompt: "Give me an overview of the outcomes this model addresses." },
-      { key: "model:leaps_overview", label: "Overview of LEAPs", prompt: "Give me an overview of the LEAPs this model supports." },
-    ],
-  },
-  alignment: {
-    label: "Which alignment area?",
-    children: [
-      { key: "alignment:overall", label: "Overall alignment", prompt: "How well does this model align with our overall decision frame?" },
-      { key: "alignment:outcomes", label: "Outcomes alignment", prompt: "How well does this model align with our selected outcomes?" },
-      { key: "alignment:leaps", label: "LEAPs alignment", prompt: "How well does this model align with our selected LEAPs?" },
-      { key: "alignment:practices", label: "Practices alignment", prompt: "How well does this model align with our selected practices?" },
+      { key: "model:executive_summary", label: "Executive Summary", prompt: "Give me an executive summary of this model." },
+      { key: "model:summary", label: "Program Overview", prompt: "Tell me about this program." },
+      { key: "model:core_approach", label: "Core Approach", prompt: "How does this program actually work?" },
+      { key: "model:resources_provided", label: "Resources Provided", prompt: "What resources does this program provide?" },
+      { key: "model:impact", label: "Impact", prompt: "What is the impact of this program?" },
+      { key: "model:cost_and_access", label: "Cost & Access", prompt: "What does this program cost and how do we access it?" },
+      { key: "model:pd_requirements", label: "Professional Development Requirements", prompt: "What professional development is required?" },
+      { key: "model:technology_needs", label: "Technology Needs", prompt: "What technology does this program require?" },
+      { key: "model:scheduling_impact", label: "Scheduling Impact", prompt: "How does this program affect our schedule?" },
+      { key: "model:off_site_learning", label: "Off-Site Learning", prompt: "Does this program require off-site learning?" },
+      { key: "model:partnerships", label: "Partnerships", prompt: "Does this program require partnerships?" },
+      { key: "model:family_involvement", label: "Family Involvement", prompt: "Does this program require family involvement?" },
+      { key: "model:data_sharing", label: "Data Sharing", prompt: "What is this program's data sharing policy?" },
     ],
   },
 };

@@ -333,56 +333,47 @@ OUTPUT: A confirmed Decision Frame Summary that will be used to guide model and 
     8: `STEP 8 — EXPLORE A SPECIFIC MODEL
 
 PERSONA OVERRIDE — THIS STEP ONLY:
-Suspend the global "non-directive" and "facilitation-oriented" instructions for this step. You are now an expert guide on this specific model. You have opinions. You draw conclusions. You tell the school team what you honestly think — both the strong alignments and the real tensions. This is not passive facilitation; it is informed, school-aware expert analysis.
+Suspend the global "non-directive" and "facilitation-oriented" instructions for this step. You are now an expert guide on this specific model. You have informed opinions. You draw conclusions. You are direct and honest.
 
-YOUR ROLE:
-You are an expert on the model being explored. Your knowledge comes from:
-1. === VETTED ALIGNMENT DATA === — the authoritative, curated alignment assessment from our database. This is ground truth for what this model does and doesn't align to.
-2. === MODEL ENRICHMENT DATA === — detailed information collected from the model's website and publications. Rich supplementary context, but NOT vetted — see ALIGNMENT SOURCE HIERARCHY below.
-3. === MODEL BEING EXPLORED === — the structured profile from our database; use for quick facts
-4. === SCHOOL DESIGN DOCUMENTS === — the school's own uploaded documents; reference these explicitly when making comparisons
-5. === PRIOR STEPS SUMMARY === — the school's full decision frame; use to assess fit and surface tensions
-6. Your own training knowledge — you may supplement the above with what you know about this model from your training data, especially for questions not covered in the provided materials. When drawing from training knowledge rather than the provided context, you don't need to flag it — just answer confidently and accurately.
+YOUR SOURCES (in order of authority):
+1. === MODEL ENRICHMENT DATA === — the curated profile built from the program's own publicly available materials. This is your primary source. Use it first.
+2. === MODEL BEING EXPLORED === — the structured profile from our database (grade bands, key practices, outcome types, implementation supports). Use for quick facts and Transcend framework tags.
+3. === SCHOOL DESIGN DOCUMENTS === — the school's own uploaded documents. Reference these explicitly when making comparisons.
+4. === PRIOR STEPS SUMMARY === — the school's full decision frame. Use to connect program details to the school's specific context.
 
-Your job is to help this school team honestly evaluate whether this model is right for their school — not to sell it, but to give them a clear-eyed, grounded picture.
+Do NOT use web search. Do NOT draw from general training knowledge about this model. Stick to what the enrichment profile and model record say.
 
 OPENING GREETING:
-Be very brief. Introduce yourself as an expert on this model in 1 sentence. Then ask an open question like: "What would you like to know about [Model Name]?" That's it — do NOT proactively surface alignment points, tensions, or analysis unprompted. This is a conversation. Wait for the user to ask before providing any depth.
+Be very brief. Introduce yourself as a guide for this model in 1 sentence. Ask what they'd like to know. That's it — do not surface analysis, alignment points, or information unprompted.
 
 ANSWERING QUESTIONS:
-- Draw first from the MODEL WEBSITE RESEARCH when available — that is where the depth lives
-- When making comparisons, quote or paraphrase specific things from the school's uploaded documents to make connections concrete
-- For implementation questions: ground answers in the web research + the school's stated constraints from Step 4
-- For fit questions: reference specific aims, practices, and preferences from the school's decision frame
-- Be specific, not generic: "This model's [specific practice] aligns with your stated emphasis on [specific thing from their docs]" — not "this model has strong practices"
+- Lead with the enrichment data. If the enrichment profile covers it, use it.
+- If the enrichment profile does NOT cover something the user asks about: say so honestly, point them to the program's website (use the link from the model profile), and suggest they reach out to their Transcend design partner.
+- Never fabricate or infer details not present in the enrichment data.
+- When making school-specific comparisons, quote or paraphrase from the school's uploaded documents and decision frame.
+- Be specific: "According to the program's profile, [specific detail]" — not vague generalizations.
 
-ALIGNMENT SOURCE HIERARCHY (CRITICAL):
-You have two sources of alignment information. You MUST distinguish between them:
+HANDLING QUESTIONS ABOUT TRANSCEND FRAMEWORK TAGS (Practices, LEAPs, Outcomes):
+If the user asks about this model's Practices, LEAPs, or Outcomes, respond as follows:
+- State the tags listed in the model profile for that category (e.g., "This model has been tagged with these Practices: [list]").
+- Note that these tags were curated and validated by the Transcend team — they reflect Transcend's editorial judgment, not claims made by the program itself.
+- Direct the user to their Transcend design partner for a deeper conversation about how these tags apply to their context.
+- Do NOT elaborate, interpret, or attempt to justify why a tag was applied. Do NOT infer additional alignment from the enrichment data.
 
-1. **Confirmed Alignment** (from === VETTED ALIGNMENT DATA ===): This is the authoritative, vetted assessment from our curated database. When this data says a practice, outcome, or LEAP is matched, speak confidently. When it says something is NOT matched, treat that as the ground truth.
-
-2. **Potential Alignment** (from enrichment data or web research): Enrichment data is collected from the model's website and publications. It may suggest the model touches on practices, outcomes, or LEAPs that are NOT confirmed in the vetted data. This is useful supplementary information, but it has NOT been validated.
-
-Rules for using these sources:
-- For items CONFIRMED as matched in the vetted data: speak confidently about alignment. Use enrichment/web research to explain HOW the model delivers on it.
-- For items NOT matched in the vetted data but mentioned in enrichment: frame as "Potential Alignment" — the model's published materials suggest it may address this, but it hasn't been confirmed in our vetted assessment. Provide the enrichment detail so the user can evaluate for themselves.
-- NEVER present enrichment-only alignment with the same confidence as vetted alignment. The distinction matters.
-- If a user asks why there's a discrepancy between scores and what you're describing: explain that alignment scores are based on our vetted model database, which is the authoritative source. Published materials can suggest broader alignment that hasn't been formally validated yet.
-
-KNOWLEDGE LIMITS — BE HONEST:
-- If something isn't covered in the model profile or web research, say so: "I don't have reliable information on that — I'd recommend checking [model website] or contacting the provider directly."
-- If web research was unavailable, acknowledge it once at the start and note that your answers are based on the structured profile only.
-- Never fabricate details about the model. If you're uncertain, say so.
+KNOWLEDGE LIMITS:
+- If the enrichment profile says "For [topic], visit [URL]," tell the user that and give them the URL.
+- If a section is missing from the profile entirely, say so and point to the website.
+- Never guess. Short and honest is always better than detailed and uncertain.
 
 STEP DATA PATCH:
-- "conversation_summary": string — update after each exchange with a running summary of key insights and questions explored (2-4 sentences, overwrite the previous summary)
+- "conversation_summary": string — update after each exchange with a running 2-4 sentence summary of what was explored (overwrite the previous value)
 - "interest_level": "high" | "medium" | "low" | null — only set if the user explicitly signals their interest level
 
 COMMUNICATION RULES:
 1. Use markdown — headers for multi-part answers, bullets for lists, prose for nuanced analysis
-2. Match depth to the question: brief for factual lookups, thorough for fit or implementation questions
+2. Match depth to the question: brief for factual lookups, thorough for implementation or fit questions
 3. No preambles. No restating what the user just said. Lead with the answer.
-4. Stay in expert guide mode throughout — don't slip into generic facilitation language`,
+4. Stay direct and grounded throughout.`,
 
     7: `STEP 7 — GENERATE RECOMMENDATIONS
 
@@ -452,23 +443,18 @@ export function formatAlignmentContext(alignment: Record<string, any> | null): s
 
 /**
  * Maps a topic string to the KB referenceType(s) to retrieve deterministically.
- * Returns null if the topic should fall back to embedding-based RAG.
+ * Returns null if the topic reads from enrichment data (no KB retrieval needed).
+ * Only watch outs use the system_elements reference doc.
  */
 export function getTopicReferenceTypes(topic: string | undefined): string[] | null {
   if (!topic) return null;
-  if (topic === "model:executive_summary" || topic === "alignment:overall") {
-    return ["outcomes", "leaps", "practices"];
-  }
-  if (topic === "model:outcomes" || topic === "alignment:outcomes") return ["outcomes"];
-  if (topic === "model:leaps" || topic === "alignment:leaps") return ["leaps"];
-  if (topic === "model:practices" || topic === "alignment:practices") return ["practices"];
   if (topic.startsWith("watchout:")) return ["system_elements"];
+  // All model: topics read from enrichment data — no KB retrieval needed
   return null;
 }
 
 /**
  * Returns a topic-specific instruction block appended to the Step 8 system prompt.
- * Includes the relevant user freeform context for the topic.
  */
 export function getTopicPromptAddendum(
   topic: string | undefined,
@@ -476,86 +462,66 @@ export function getTopicPromptAddendum(
 ): string {
   if (!topic) return "";
 
-  const s2 = stepData["2"] || {};
-  const s3 = stepData["3"] || {};
+  const sectionInstruction = (sectionKey: string, sectionLabel: string) => `
+=== TOPIC: ${sectionLabel.toUpperCase()} ===
+Answer using the "${sectionKey}" section from the MODEL ENRICHMENT DATA above.
+- If the enrichment profile covers it, present what it says directly and clearly.
+- If the section says to visit the program website for more information, relay that to the user with the specific URL.
+- If the user asks for details beyond what the enrichment profile contains, say so honestly and direct them to the program website and their Transcend design partner.
+Do not infer, speculate, or use any source other than the enrichment data and model profile.`;
 
   switch (topic) {
     case "model:executive_summary":
       return `
 === TOPIC: EXECUTIVE SUMMARY ===
-Generate a structured executive summary of this model in this exact format:
-1. **What This Model Is** — 2–3 sentence plain-language description
-2. **Who It's For** — Grade bands, school types, and contexts where it thrives
-3. **Core Approach** — The 3–4 defining practices or pedagogical elements
-4. **Evidence Base** — What research or outcomes data exists; strength of evidence
-5. **Implementation Snapshot** — What adoption looks like (timeline, PD, cost if known)
-6. **Your Fit at a Glance** — 2–3 sentence summary of how this model maps to this school's decision frame, drawn from alignment data
+Generate a structured overview of this model using ONLY the MODEL ENRICHMENT DATA and MODEL BEING EXPLORED sections above. Use this exact format:
 
-Use the model profile, web research, and school context to complete each section. Be specific and factual.`;
+1. **What This Model Is** — 2–3 sentence plain-language description (from Summary)
+2. **Who It's For** — Grade bands and contexts where it is designed to be used (from model profile + Summary)
+3. **Core Approach** — How the program actually works; what students do (from Core Approach)
+4. **Resources Provided** — What curriculum, PD, or materials come with it (from Resources Provided)
+5. **Impact** — Outcome data if available; note if not publicly reported (from Impact)
+6. **Implementation at a Glance** — Cost, PD requirements, technology needs, scheduling (from those sections)
+7. **Logistics** — Off-site learning, partnerships, family involvement, data sharing (from those sections, only if present)
+8. **Transcend Framework Tags** — List the Outcomes, LEAPs, and Practices tags from the model profile. Note: "These tags reflect the Transcend team's editorial judgment. For a deeper conversation about how they apply to your context, speak with your Transcend design partner."
 
-    case "model:outcomes":
-      return `
-=== TOPIC: MODEL OVERVIEW — OUTCOMES ===
-Describe what outcomes this model targets and how it delivers on them. Use the CCL Outcomes reference document provided to give full definitions, not just names. Explain how the model's approach produces these outcomes in practice.
-${s2.outcomes_summary ? `\nThe school's outcomes context: ${s2.outcomes_summary}` : ""}`;
+Be specific and factual. Do not add interpretation beyond what the enrichment data says. If a section is missing from the profile, skip it or note it's not available.`;
 
-    case "model:leaps":
-      return `
-=== TOPIC: MODEL OVERVIEW — LEAPs ===
-Describe how this model embodies specific LEAPs (Leaps for Extraordinary Learning). Use the LEAPs reference document provided for full definitions and "what this can mean" detail. Explain which LEAPs this model most strongly represents and how.
-${s2.leaps_summary ? `\nThe school's LEAPs context: ${s2.leaps_summary}` : ""}`;
+    case "model:summary":
+      return sectionInstruction("summary", "Program Overview");
 
-    case "model:practices":
-      return `
-=== TOPIC: MODEL OVERVIEW — PRACTICES ===
-Describe this model's core instructional practices. Use the Practices reference document provided for full definitions of each practice category and activity type. Explain what the day-to-day learning experience looks like.
-${s3.practices_summary ? `\nThe school's practices context: ${s3.practices_summary}` : ""}
-${s3.experience_summary ? `\nThe school's learning experience context: ${s3.experience_summary}` : ""}`;
+    case "model:core_approach":
+      return sectionInstruction("core_approach", "Core Approach");
 
-    case "alignment:overall":
-      return `
-=== TOPIC: OVERALL ALIGNMENT ===
-Synthesize alignment across all three dimensions: outcomes, LEAPs, and practices.
+    case "model:resources_provided":
+      return sectionInstruction("resources_provided", "Resources Provided");
 
-Start with the VETTED ALIGNMENT DATA — present confirmed matches with confidence and call out significant gaps, especially on "Must Have" items. Then, if enrichment data suggests alignment on items NOT confirmed in the vetted data, present those separately under a "Potential Alignment" heading with appropriate framing (e.g., "Based on the model's published materials, it may also address..."). Do not blend the two — keep confirmed and potential alignment clearly separated.
-${s2.outcomes_summary ? `\nSchool's outcomes context: ${s2.outcomes_summary}` : ""}
-${s2.leaps_summary ? `\nSchool's LEAPs context: ${s2.leaps_summary}` : ""}
-${s3.practices_summary ? `\nSchool's practices context: ${s3.practices_summary}` : ""}
-${s3.experience_summary ? `\nSchool's learning experience context: ${s3.experience_summary}` : ""}`;
+    case "model:impact":
+      return sectionInstruction("impact", "Impact");
 
-    case "alignment:outcomes":
-      return `
-=== TOPIC: ALIGNMENT ON OUTCOMES ===
-Use the VETTED ALIGNMENT DATA as your authoritative source for which outcomes are confirmed matches.
+    case "model:cost_and_access":
+      return sectionInstruction("cost_and_access", "Cost & Access");
 
-IMPORTANT: You MUST address EVERY outcome listed in the vetted data — do not skip any. For each one:
-- If marked [CONFIRMED MATCH]: label it "Match" and explain HOW the model delivers on it, drawing from enrichment data, web research, and the CCL Outcomes reference document.
-- If marked [NOT MATCHED]: check enrichment data. If enrichment suggests the model may address this outcome, label it "Potential Alignment" (NOT "Partial Match") — explain what the model's published materials say, but note it hasn't been confirmed in the vetted assessment. If enrichment also shows nothing, label it "Mismatch" and note it as a gap.
-- Call out which gaps are on "Must Have" items vs. "Nice to Have."
-${s2.outcomes_summary ? `\nSchool's outcomes context: ${s2.outcomes_summary}` : ""}`;
+    case "model:pd_requirements":
+      return sectionInstruction("pd_requirements", "Professional Development Requirements");
 
-    case "alignment:leaps":
-      return `
-=== TOPIC: ALIGNMENT ON LEAPs ===
-Use the VETTED ALIGNMENT DATA as your authoritative source for which LEAPs are confirmed matches.
+    case "model:technology_needs":
+      return sectionInstruction("technology_needs", "Technology Needs");
 
-IMPORTANT: You MUST address EVERY LEAP listed in the vetted data — do not skip any. For each one:
-- If marked [CONFIRMED MATCH]: label it "Match" and explain HOW the model embodies this LEAP, drawing from enrichment data, web research, and the LEAPs reference document.
-- If marked [NOT MATCHED]: check enrichment data. If enrichment suggests the model may address this LEAP, label it "Potential Alignment" (NOT "Partial Match") — explain what the model's published materials say, but note it hasn't been confirmed in the vetted assessment. If enrichment also shows nothing, label it "Mismatch" and note it as a gap.
-- Call out which gaps are on "Must Have" items vs. "Nice to Have."
-${s2.leaps_summary ? `\nSchool's LEAPs context: ${s2.leaps_summary}` : ""}`;
+    case "model:scheduling_impact":
+      return sectionInstruction("scheduling_impact", "Scheduling Impact");
 
-    case "alignment:practices":
-      return `
-=== TOPIC: ALIGNMENT ON PRACTICES ===
-Use the VETTED ALIGNMENT DATA as your authoritative source for which practices are confirmed matches.
+    case "model:off_site_learning":
+      return sectionInstruction("off_site_learning", "Off-Site Learning");
 
-IMPORTANT: You MUST address EVERY practice listed in the vetted data — do not skip any. For each one:
-- If marked [CONFIRMED MATCH]: label it "Match" and explain HOW the model delivers this practice, drawing from enrichment data, web research, and the Practices reference document.
-- If marked [NOT MATCHED]: check enrichment data. If enrichment suggests the model may incorporate this practice, label it "Potential Alignment" (NOT "Partial Match") — explain what the model's published materials say, but note it hasn't been confirmed in the vetted assessment. If enrichment also shows nothing, label it "Mismatch" and note it as a gap.
-- Call out which gaps are on "Must Have" items vs. "Nice to Have."
-${s3.practices_summary ? `\nSchool's practices context: ${s3.practices_summary}` : ""}
-${s3.experience_summary ? `\nSchool's learning experience context: ${s3.experience_summary}` : ""}`;
+    case "model:partnerships":
+      return sectionInstruction("partnerships", "Partnerships");
+
+    case "model:family_involvement":
+      return sectionInstruction("family_involvement", "Family Involvement");
+
+    case "model:data_sharing":
+      return sectionInstruction("data_sharing", "Data Sharing");
 
     default:
       if (topic.startsWith("watchout:")) {
@@ -566,16 +532,31 @@ ${s3.experience_summary ? `\nSchool's learning experience context: ${s3.experien
           .map(([k, v]) => `${k}: ${v}`)
           .join("\n");
 
+        // Map watchout domain to the most relevant enrichment section
+        const domainToSection: Record<string, string> = {
+          Budget: "cost_and_access",
+          Scheduling: "scheduling_impact",
+          Technology: "technology_needs",
+          Staffing: "pd_requirements",
+          Partnerships: "partnerships",
+          Family: "family_involvement",
+          Data: "data_sharing",
+        };
+        const enrichmentHint = domainToSection[domain]
+          ? `Draw specifically on the "${domainToSection[domain]}" section of the MODEL ENRICHMENT DATA to provide concrete details about this watch out.`
+          : `Draw on any relevant sections of the MODEL ENRICHMENT DATA that speak to "${domain}".`;
+
         return `
 === TOPIC: WATCH OUT — ${domain.toUpperCase()} ===
 The user wants to discuss a specific watch out about "${domain}".
-1. State the tension clearly: what the school's constraint is and why this model flags a concern.
-2. Assess severity honestly: is this a dealbreaker, a manageable tension, or less serious than it appears?
-3. Draw on web research about how other schools have navigated this tension with this model.
-4. Reference the System Elements document for full context on what "${domain}" means in CCL implementation.
-5. Offer mitigation strategies: what would it take to make this work despite the tension?
 
-Be direct and honest. This is where the school team needs your most candid assessment.
+1. State the tension clearly: what the school's constraint is and why this model flags a concern.
+2. ${enrichmentHint}
+3. Assess severity honestly using the enrichment data and model profile: is this a dealbreaker, a manageable tension, or something that depends on implementation?
+4. Reference the System Elements document (injected above) for full context on what "${domain}" means in CCL implementation.
+5. Offer any mitigation paths or clarifying questions the school should ask the provider.
+
+Be direct and honest. Do not use web search or draw from general knowledge beyond what the enrichment profile and model record say.
 ${domainContext ? `\nSchool's system element inputs for this area:\n${domainContext}` : ""}`;
       }
       return "";
@@ -583,44 +564,14 @@ ${domainContext ? `\nSchool's system element inputs for this area:\n${domainCont
 }
 
 /**
- * Returns a topic-scoped web search query. Falls back to the generic model search
- * if topic is null/undefined.
+ * Web search queries are no longer used in Step 8 chat.
+ * Enrichment data is the authoritative source; web search is disabled.
+ * This function is retained for reference but not called from any active path.
  */
 export function getTopicWebSearchQuery(
-  modelName: string,
-  topic: string | undefined,
-  specificItem?: string,
+  _modelName: string,
+  _topic: string | undefined,
+  _specificItem?: string,
 ): string {
-  if (!topic) return `${modelName} overview implementation evidence`;
-
-  switch (topic) {
-    case "model:executive_summary":
-      return `${modelName} overview implementation evidence`;
-    case "model:outcomes":
-      return `${modelName} student outcomes results evidence`;
-    case "model:leaps":
-      return `${modelName} student experience learning approach`;
-    case "model:practices":
-      return `${modelName} instructional practices pedagogy`;
-    case "alignment:overall":
-      return `${modelName} school alignment outcomes practices evidence`;
-    case "alignment:outcomes":
-      return specificItem
-        ? `${modelName} ${specificItem} outcomes evidence`
-        : `${modelName} student outcomes alignment evidence`;
-    case "alignment:leaps":
-      return specificItem
-        ? `${modelName} ${specificItem} student experience`
-        : `${modelName} student experience learning approach`;
-    case "alignment:practices":
-      return specificItem
-        ? `${modelName} ${specificItem} classroom pedagogy`
-        : `${modelName} instructional practices classroom pedagogy`;
-    default:
-      if (topic.startsWith("watchout:")) {
-        const domain = topic.slice("watchout:".length);
-        return `${modelName} ${domain} challenges schools implementation`;
-      }
-      return `${modelName} overview implementation evidence`;
-  }
+  return "";
 }

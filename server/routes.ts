@@ -14,9 +14,39 @@ import { matchTaxonomyName, normalizeGradeBandToCanonical } from "./taxonomy-mat
 import { retrieveRelevantChunks, ingestKnowledgeBaseEntry, reindexAllKnowledgeBase } from "./embeddings";
 import { seedTaxonomy } from "./seed-taxonomy";
 import { api } from "@shared/routes";
-import { insertModelSchema, WORKFLOW_STEPS } from "@shared/schema";
+import { insertModelSchema, WORKFLOW_STEPS, type User, type Session } from "@shared/schema";
+import {
+  buildCodeHash,
+  constantTimeEqualHex,
+  emailVerificationExpiry,
+  generateEmailVerificationSecrets,
+  hashVerificationToken,
+  isAdminEmail,
+  parseAdminEmails,
+  sendVerificationEmail,
+} from "./email-verification";
+
+declare global {
+  namespace Express {
+    interface Request {
+      authUser?: User;
+    }
+  }
+}
 
 const upload = multer({ storage: multer.memoryStorage() });
+
+const resendVerificationByEmail = new Map<string, number>();
+const RESEND_VERIFICATION_COOLDOWN_MS = 60_000;
+
+function sessionOk(req: Request, session: Session | undefined): session is Session {
+  return !!session && session.userId === req.session?.userId;
+}
+
+function pathParamSingle(param: string | string[] | undefined): string {
+  if (param == null) return "";
+  return Array.isArray(param) ? (param[0] ?? "") : param;
+}
 
 // Auth middleware — returns 401 if the user is not logged in
 export function requireAuth(req: Request, res: Response, next: NextFunction) {
@@ -26,40 +56,60 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
   next();
 }
 
-/**
- * Fetches a live web research summary about a model using gpt-4o-search-preview,
- * which performs real web searches rather than relying on training-data recall.
- * Returns cited, up-to-date content about the model's philosophy, implementation,
- * evidence, and cost. Result is cached in stepData so it only runs once per session.
- */
-async function fetchModelWebResearch(modelName: string, modelLink?: string | null): Promise<string> {
+/** After requireAuth — loads user, requires verified email, sets req.authUser */
+export async function requireVerifiedEmail(req: Request, res: Response, next: NextFunction) {
   try {
-    const linkHint = modelLink ? ` Their website is ${modelLink}.` : "";
-    const completion = await (openai.chat.completions.create as any)({
-      model: "gpt-4o-search-preview",
-      web_search_options: {},
-      messages: [
-        {
-          role: "system",
-          content: "You are an expert researcher on educational models, school transformation programs, and innovative learning designs. Search the web to find accurate, specific, up-to-date information. Cite sources inline where relevant. Do not fabricate details — if information is unavailable, say so clearly.",
-        },
-        {
-          role: "user",
-          content: `Search the web and provide a comprehensive research summary about the educational model or program called "${modelName}".${linkHint}\n\nCover the following:\n1. Core philosophy and what makes this model distinctive\n2. How it works day-to-day in schools (structures, schedules, roles)\n3. Target grade levels and types of schools it serves\n4. Evidence base and documented student outcomes\n5. Implementation requirements (staffing, training, technology, time)\n6. Cost structure and how schools typically access the model\n7. Notable partner schools or real-world examples\n8. Common challenges or critiques\n\nBe specific and factual. Cite web sources inline. Where information is limited or uncertain, say so.`,
-        },
-      ],
-    });
-    return completion.choices[0].message.content ?? "";
-  } catch (err) {
-    console.warn(`[Step 8] Model web research failed for "${modelName}":`, err);
-    return "";
+    if (!req.session?.userId) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+    const user = await storage.getUserById(req.session.userId);
+    if (!user) {
+      req.session.destroy(() => {});
+      return res.status(401).json({ message: "Not authenticated" });
+    }
+    if (!user.emailVerifiedAt) {
+      return res.status(403).json({
+        message: "Verify your email to continue.",
+        code: "email_unverified",
+      });
+    }
+    req.authUser = user;
+    next();
+  } catch (e) {
+    console.error("[auth] requireVerifiedEmail:", e);
+    res.status(500).json({ message: "Server error" });
   }
+}
+
+/** After requireVerifiedEmail — requires ADMIN_EMAILS allowlist */
+export function requireAdmin(req: Request, res: Response, next: NextFunction) {
+  const user = req.authUser;
+  if (!user) {
+    return res.status(401).json({ message: "Unauthorized" });
+  }
+  const allow = parseAdminEmails();
+  if (allow.length === 0) {
+    return res.status(403).json({
+      message: "Admin access is not configured. Set ADMIN_EMAILS.",
+      code: "admin_not_configured",
+    });
+  }
+  if (!allow.includes(user.email.toLowerCase())) {
+    return res.status(403).json({ message: "Forbidden", code: "not_admin" });
+  }
+  next();
 }
 
 export async function registerRoutes(
   httpServer: Server,
   app: Express,
 ): Promise<Server> {
+
+  try {
+    await storage.backfillLegacyEmailVerified();
+  } catch (e) {
+    console.warn("[auth] backfillLegacyEmailVerified:", e);
+  }
 
   // =========================================================================
   // AUTH
@@ -70,7 +120,17 @@ export async function registerRoutes(
     password: z.string().min(8, "Password must be at least 8 characters"),
   });
 
-  // Register a new account
+  const verifyEmailSchema = z
+    .object({
+      token: z.string().min(1).optional(),
+      email: z.string().email().optional(),
+      code: z.string().min(4).optional(),
+    })
+    .refine((b) => !!(b.token || (b.email && b.code)), {
+      message: "Provide a verification token or email and code",
+    });
+
+  // Register a new account (no session until email is verified)
   app.post("/api/auth/register", async (req, res) => {
     try {
       const { email, password } = authSchema.parse(req.body);
@@ -78,10 +138,33 @@ export async function registerRoutes(
       if (existing) {
         return res.status(409).json({ message: "An account with this email already exists" });
       }
-      const user = await storage.createUserWithPassword(email, password);
-      req.session.userId = user.id;
-      await new Promise<void>((resolve, reject) => req.session.save((err) => err ? reject(err) : resolve()));
-      res.status(201).json({ id: user.id, email: user.email });
+      const { rawToken, tokenHash, code } = generateEmailVerificationSecrets();
+      const expiresAt = emailVerificationExpiry();
+      const sentAt = new Date();
+      const user = await storage.createUserWithPassword(email, password, {
+        tokenHash,
+        code,
+        expiresAt,
+        sentAt,
+      });
+      const sendResult = await sendVerificationEmail({ to: user.email, rawToken, code });
+      if (!sendResult.ok) {
+        console.error("[auth] Verification email failed after signup:", sendResult.reason);
+        return res.status(500).json({
+          message: "Account was created but we could not send the verification email.",
+          reason: sendResult.reason,
+        });
+      }
+      const emailed = sendResult.channel === "resend";
+      res.status(201).json({
+        ok: true,
+        message: emailed
+          ? "Check your email for a verification link and code."
+          : "Account created. Use the verification link or code (see details below).",
+        email: user.email,
+        emailChannel: sendResult.channel,
+        devNote: sendResult.channel === "dev_console" ? sendResult.note : undefined,
+      });
     } catch (err) {
       if (err instanceof z.ZodError) {
         return res.status(400).json({ message: err.errors[0].message });
@@ -103,9 +186,21 @@ export async function registerRoutes(
       if (!valid) {
         return res.status(401).json({ message: "Invalid email or password" });
       }
+      if (!user.emailVerifiedAt) {
+        return res.status(403).json({
+          message:
+            "This email is not verified yet. Check your inbox or use “Resend verification” on the verification page.",
+          code: "email_unverified",
+        });
+      }
       req.session.userId = user.id;
-      await new Promise<void>((resolve, reject) => req.session.save((err) => err ? reject(err) : resolve()));
-      res.json({ id: user.id, email: user.email });
+      await new Promise<void>((resolve, reject) => req.session.save((err) => (err ? reject(err) : resolve())));
+      res.json({
+        id: user.id,
+        email: user.email,
+        emailVerifiedAt: user.emailVerifiedAt.toISOString(),
+        isAdmin: isAdminEmail(user.email),
+      });
     } catch (err) {
       if (err instanceof z.ZodError) {
         return res.status(400).json({ message: err.errors[0].message });
@@ -115,18 +210,125 @@ export async function registerRoutes(
     }
   });
 
-  // Get current user
-  app.get("/api/auth/me", (req, res) => {
-    if (!req.session?.userId) {
-      return res.status(401).json({ message: "Not authenticated" });
+  app.post("/api/auth/verify-email", async (req, res) => {
+    try {
+      const body = verifyEmailSchema.parse(req.body);
+      let user: User | undefined;
+
+      if (body.token) {
+        const hash = hashVerificationToken(body.token);
+        user = await storage.findUserByEmailVerificationTokenHash(hash);
+      } else if (body.email && body.code) {
+        const u = await storage.findLatestUnverifiedUserByEmailForResend(body.email);
+        if (
+          u &&
+          u.emailVerificationCodeHash &&
+          constantTimeEqualHex(buildCodeHash(u.id, body.code.trim()), u.emailVerificationCodeHash)
+        ) {
+          user = u;
+        }
+      }
+
+      if (!user?.emailVerificationTokenHash && !user?.emailVerificationCodeHash) {
+        return res.status(400).json({ message: "Invalid or expired verification." });
+      }
+      if (user.emailVerifiedAt) {
+        return res.status(400).json({ message: "This account is already verified." });
+      }
+      const exp = user.emailVerificationExpiresAt;
+      if (exp && exp.getTime() < Date.now()) {
+        return res.status(400).json({
+          message: "Verification has expired. Request a new link from the login page.",
+        });
+      }
+
+      await storage.verifyUserEmailById(user.id);
+      req.session.userId = user.id;
+      await new Promise<void>((resolve, reject) => req.session.save((err) => (err ? reject(err) : resolve())));
+
+      const fresh = await storage.getUserById(user.id);
+      res.json({
+        ok: true,
+        id: user.id,
+        email: user.email,
+        emailVerifiedAt: fresh?.emailVerifiedAt?.toISOString() ?? null,
+        isAdmin: !!(fresh?.emailVerifiedAt && isAdminEmail(user.email)),
+      });
+    } catch (err) {
+      if (err instanceof z.ZodError) {
+        return res.status(400).json({ message: err.errors[0].message });
+      }
+      console.error("[auth] verify-email error:", err);
+      res.status(500).json({ message: "Verification failed" });
     }
-    storage.getUserById(req.session.userId).then((user) => {
+  });
+
+  app.post("/api/auth/resend-verification", async (req, res) => {
+    try {
+      const { email, password } = authSchema.parse(req.body);
+      const user = await storage.findLatestUnverifiedUserByEmailForResend(email);
+
+      const generic =
+        "If an unverified account exists for that email, we sent a new verification message.";
+
+      if (!user) {
+        return res.status(200).json({ ok: true, message: generic });
+      }
+      const valid = await storage.verifyUserPassword(user, password);
+      if (!valid) {
+        return res.status(200).json({ ok: true, message: generic });
+      }
+
+      const key = email.toLowerCase();
+      const last = resendVerificationByEmail.get(key) ?? 0;
+      if (Date.now() - last < RESEND_VERIFICATION_COOLDOWN_MS) {
+        return res.status(429).json({ message: "Please wait a minute before requesting another email." });
+      }
+
+      const { rawToken, tokenHash, code } = generateEmailVerificationSecrets();
+      const expiresAt = emailVerificationExpiry();
+      const sentAt = new Date();
+      const codeHash = buildCodeHash(user.id, code);
+      await storage.setEmailVerificationPending(user.id, tokenHash, codeHash, expiresAt, sentAt);
+
+      const sendResult = await sendVerificationEmail({ to: user.email, rawToken, code });
+      if (!sendResult.ok) {
+        return res.status(500).json({ message: sendResult.reason });
+      }
+      resendVerificationByEmail.set(key, Date.now());
+      const emailed = sendResult.channel === "resend";
+      res.json({
+        ok: true,
+        message: emailed ? "Verification email sent." : sendResult.note,
+        emailChannel: sendResult.channel,
+      });
+    } catch (err) {
+      if (err instanceof z.ZodError) {
+        return res.status(400).json({ message: err.errors[0].message });
+      }
+      console.error("[auth] resend-verification error:", err);
+      res.status(500).json({ message: "Failed to resend" });
+    }
+  });
+
+  // Get current user
+  app.get("/api/auth/me", requireAuth, async (req, res) => {
+    try {
+      const user = await storage.getUserById(req.session.userId!);
       if (!user) {
         req.session.destroy(() => {});
         return res.status(401).json({ message: "Not authenticated" });
       }
-      res.json({ id: user.id, email: user.email });
-    }).catch(() => res.status(500).json({ message: "Server error" }));
+      const verified = !!user.emailVerifiedAt;
+      res.json({
+        id: user.id,
+        email: user.email,
+        emailVerifiedAt: user.emailVerifiedAt?.toISOString() ?? null,
+        isAdmin: verified && isAdminEmail(user.email),
+      });
+    } catch {
+      res.status(500).json({ message: "Server error" });
+    }
   });
 
   // Logout
@@ -137,11 +339,14 @@ export async function registerRoutes(
     });
   });
 
+  const needUser = [requireAuth, requireVerifiedEmail];
+  const needAdmin = [requireAuth, requireVerifiedEmail, requireAdmin];
+
   // =========================================================================
   // ADMIN — Model Import & Airtable Sync
   // =========================================================================
 
-  app.post("/api/admin/import-models", upload.single("file"), async (req, res) => {
+  app.post("/api/admin/import-models", ...needAdmin, upload.single("file"), async (req, res) => {
     try {
       if (!req.file) {
         return res.status(400).json({ message: "No file uploaded" });
@@ -185,7 +390,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/admin/refresh-from-airtable", async (req, res) => {
+  app.post("/api/admin/refresh-from-airtable", ...needAdmin, async (req, res) => {
     try {
       const { fetchModelsFromAirtable } = await import("./airtable");
       const airtableModels = await fetchModelsFromAirtable();
@@ -202,9 +407,9 @@ export async function registerRoutes(
 
   // ── Model Enrichment ──────────────────────────────────────────────────
 
-  app.post("/api/admin/models/:id/enrich", async (req, res) => {
+  app.post("/api/admin/models/:id/enrich", ...needAdmin, async (req, res) => {
     try {
-      const modelId = parseInt(req.params.id, 10);
+      const modelId = parseInt(pathParamSingle(req.params.id), 10);
       if (isNaN(modelId)) {
         return res.status(400).json({ message: "Invalid model ID" });
       }
@@ -221,7 +426,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/admin/models/enrich-all", async (req, res) => {
+  app.post("/api/admin/models/enrich-all", ...needAdmin, async (req, res) => {
     try {
       const onlyUnenriched = req.body?.onlyUnenriched !== false;
       const { enrichAllModels } = await import("./enrich-models");
@@ -245,13 +450,15 @@ export async function registerRoutes(
   // SESSIONS
   // =========================================================================
 
-  app.post(api.sessions.create.path, requireAuth, async (req, res) => {
+  app.post(api.sessions.create.path, ...needUser, async (req, res) => {
     try {
       const { sessionId, focusArea, name } = api.sessions.create.input.parse(req.body);
       const userId = req.session.userId!;
       let session = await storage.getSession(sessionId);
       if (!session) {
         session = await storage.createSession(sessionId, userId, focusArea, name);
+      } else if (!sessionOk(req, session)) {
+        return res.status(409).json({ message: "This session belongs to another account" });
       }
       res.status(201).json(session);
     } catch (err) {
@@ -260,7 +467,7 @@ export async function registerRoutes(
   });
 
   // List all sessions for the authenticated user
-  app.get("/api/sessions/user", requireAuth, async (req, res) => {
+  app.get("/api/sessions/user", ...needUser, async (req, res) => {
     try {
       const userId = req.session.userId!;
       const { focusArea } = req.query as { focusArea?: string };
@@ -273,14 +480,15 @@ export async function registerRoutes(
   });
 
   // Update session name
-  app.patch(api.sessions.update.path, requireAuth, async (req, res) => {
+  app.patch(api.sessions.update.path, ...needUser, async (req, res) => {
     try {
       const { name } = api.sessions.update.input.parse(req.body);
-      const session = await storage.getSession(req.params.sessionId);
-      if (!session || session.userId !== req.session.userId) {
+      const sid = pathParamSingle(req.params.sessionId);
+      const session = await storage.getSession(sid);
+      if (!sessionOk(req, session)) {
         return res.status(404).json({ message: "Session not found" });
       }
-      await storage.updateSessionName(req.params.sessionId, name);
+      await storage.updateSessionName(sid, name);
       res.json({ ok: true });
     } catch (err) {
       res.status(400).json({ message: "Invalid input" });
@@ -288,19 +496,19 @@ export async function registerRoutes(
   });
 
   // Delete a session and all its data
-  app.delete(api.sessions.delete.path, requireAuth, async (req, res) => {
+  app.delete(api.sessions.delete.path, ...needUser, async (req, res) => {
     try {
-      const session = await storage.getSession(req.params.sessionId);
-      if (!session || session.userId !== req.session.userId) {
+      const sid = pathParamSingle(req.params.sessionId);
+      const session = await storage.getSession(sid);
+      if (!sessionOk(req, session)) {
         return res.status(404).json({ message: "Session not found" });
       }
-      await storage.resetAllWorkflow(session.id);
       const { db } = await import("./db");
       const { sessions, schoolContexts, workflowProgress } = await import("@shared/schema");
       const { eq } = await import("drizzle-orm");
       await db.delete(schoolContexts).where(eq(schoolContexts.sessionId, session.id));
       await db.delete(workflowProgress).where(eq(workflowProgress.sessionId, session.id));
-      await db.delete(sessions).where(eq(sessions.sessionId, req.params.sessionId));
+      await db.delete(sessions).where(eq(sessions.sessionId, sid));
       res.json({ ok: true });
     } catch (err) {
       console.error("Error deleting session:", err);
@@ -312,11 +520,11 @@ export async function registerRoutes(
   // STEP-BASED CHAT ADVISOR (core product)
   // =========================================================================
 
-  app.post(api.chat.stepAdvisor.path, async (req, res) => {
+  app.post(api.chat.stepAdvisor.path, ...needUser, async (req, res) => {
     try {
       const { sessionId, stepNumber, message, modelId: directModelId } = api.chat.stepAdvisor.input.parse(req.body);
       const session = await storage.getSession(sessionId);
-      if (!session) return res.status(404).json({ message: "Session not found" });
+      if (!sessionOk(req, session)) return res.status(404).json({ message: "Session not found" });
 
       const progress = await storage.getWorkflowProgress(session.id);
       if (!progress) return res.status(404).json({ message: "Workflow not found" });
@@ -474,7 +682,7 @@ export async function registerRoutes(
         }
       }
 
-      // Step 8: inject model profile + enrichment (primary) + web research (fallback)
+      // Step 8: inject model profile + enrichment (authoritative source)
       let selectedModelContext = "";
       if (stepNumber === 8) {
         const selectedModelId = directModelId ?? (allStepData["8"] as any)?.selectedModelId;
@@ -489,7 +697,7 @@ export async function registerRoutes(
                 Object.entries(attrs).map(([k, v]) => `- ${k}: ${v}`).join("\n");
             }
 
-            // Enrichment data — primary context source when available
+            // Enrichment data — authoritative source (curated from program's own materials)
             const enriched = selectedModel.enrichedContent as Record<string, string> | null;
             if (enriched) {
               const metaKeys = new Set(["raw_scrape", "source_url"]);
@@ -502,58 +710,12 @@ export async function registerRoutes(
                 })
                 .join("\n\n");
               if (enrichmentFields) {
-                selectedModelContext += `\n\n=== MODEL ENRICHMENT DATA (supplementary — from model website and publications) ===\n${enrichmentFields}`;
+                selectedModelContext += `\n\n=== MODEL ENRICHMENT DATA (authoritative source — curated from program's own materials) ===\n${enrichmentFields}`;
+              } else {
+                selectedModelContext += `\n\n=== MODEL ENRICHMENT DATA ===\nNo enrichment profile is available for this model.${selectedModel.link ? ` Direct the user to ${selectedModel.link}` : ""} and suggest they contact their Transcend design partner.`;
               }
-            }
-
-            // Web research — secondary fallback when enrichment is absent or thin
-            const hasSubstantiveEnrichment = enriched && Object.keys(enriched).filter(
-              (k) => k.endsWith("_detailed") && enriched[k] && enriched[k] !== "Not available from current sources"
-            ).length >= 3;
-
-            if (!hasSubstantiveEnrichment) {
-              const step8Data = (allStepData["8"] as Record<string, any>) ?? {};
-              const webContentKey = `webContent_${selectedModel.id}`;
-              let modelWebContent: string = step8Data[webContentKey] ?? "";
-
-              if (!modelWebContent && isGreeting) {
-                fetchModelWebResearch(selectedModel.name, selectedModel.link)
-                  .then(async (content) => {
-                    if (!content) return;
-                    try {
-                      const freshProgress = await storage.getWorkflowProgress(session.id);
-                      if (!freshProgress) return;
-                      const updatedStepData = { ...(freshProgress.stepData as Record<string, any>) };
-                      const freshStep8 = (updatedStepData["8"] as Record<string, any>) ?? {};
-                      if (!freshStep8[webContentKey]) {
-                        updatedStepData["8"] = { ...freshStep8, [webContentKey]: content };
-                        await storage.updateWorkflowProgress(session.id, freshProgress.currentStep, freshProgress.stepsCompleted as number[], updatedStepData);
-                      }
-                    } catch (e) {
-                      console.warn("[Step 8] Background web research cache save failed:", e);
-                    }
-                  })
-                  .catch(err => console.warn("[Step 8] Background web research failed:", err));
-                modelWebContent = "";
-              } else if (!modelWebContent) {
-                modelWebContent = await fetchModelWebResearch(selectedModel.name, selectedModel.link);
-                if (modelWebContent) {
-                  const updatedStepData = { ...(progress.stepData as Record<string, any>) };
-                  updatedStepData["8"] = { ...step8Data, [webContentKey]: modelWebContent };
-                  await storage.updateWorkflowProgress(
-                    session.id,
-                    progress.currentStep,
-                    progress.stepsCompleted as number[],
-                    updatedStepData,
-                  );
-                }
-              }
-
-              if (modelWebContent) {
-                selectedModelContext += `\n\n=== MODEL RESEARCH SUMMARY (WEB) ===\n${modelWebContent}`;
-              } else if (!isGreeting) {
-                selectedModelContext += `\n\n=== MODEL RESEARCH SUMMARY ===\nResearch summary unavailable. Draw on your training knowledge about this model and direct the user to the model's website for additional information${selectedModel.link ? ` at ${selectedModel.link}` : ""}.`;
-              }
+            } else {
+              selectedModelContext += `\n\n=== MODEL ENRICHMENT DATA ===\nNo enrichment profile is available for this model.${selectedModel.link ? ` Direct the user to ${selectedModel.link}` : ""} and suggest they contact their Transcend design partner.`;
             }
           }
         }
@@ -682,7 +844,7 @@ The JSON object must have these exact keys:
   // in the background by a cheap gpt-4o-mini call after the stream ends.
   // =========================================================================
 
-  app.post("/api/chat/step8/stream", async (req, res) => {
+  app.post("/api/chat/step8/stream", ...needUser, async (req, res) => {
     const { sessionId, message, modelId: directModelId, topic } = req.body as {
       sessionId: string;
       message: string;
@@ -696,7 +858,7 @@ The JSON object must have these exact keys:
 
     try {
       const session = await storage.getSession(sessionId);
-      if (!session) return res.status(404).json({ message: "Session not found" });
+      if (!sessionOk(req, session)) return res.status(404).json({ message: "Session not found" });
 
       const progress = await storage.getWorkflowProgress(session.id);
       if (!progress) return res.status(404).json({ message: "Workflow not found" });
@@ -768,7 +930,7 @@ The JSON object must have these exact keys:
         ? `\n\n=== CURRENT STEP DATA (captured so far) ===\n${typeof currentStepData === "string" ? currentStepData : JSON.stringify(currentStepData, null, 2)}`
         : "";
 
-      // Model profile + enrichment (primary) + web research (fallback)
+      // Model profile + enrichment (authoritative source)
       const selectedModel = await storage.getModel(Number(directModelId));
       let selectedModelContext = "";
       if (selectedModel) {
@@ -780,7 +942,7 @@ The JSON object must have these exact keys:
             Object.entries(attrs).map(([k, v]) => `- ${k}: ${v}`).join("\n");
         }
 
-        // Enrichment data — primary context source when available
+        // Enrichment data — authoritative source (curated from program's own materials)
         const enriched = selectedModel.enrichedContent as Record<string, string> | null;
         if (enriched) {
           const metaKeys = new Set(["raw_scrape", "source_url"]);
@@ -793,41 +955,12 @@ The JSON object must have these exact keys:
             })
             .join("\n\n");
           if (enrichmentFields) {
-            selectedModelContext += `\n\n=== MODEL ENRICHMENT DATA (supplementary — from model website and publications) ===\n${enrichmentFields}`;
+            selectedModelContext += `\n\n=== MODEL ENRICHMENT DATA (authoritative source — curated from program's own materials) ===\n${enrichmentFields}`;
+          } else {
+            selectedModelContext += `\n\n=== MODEL ENRICHMENT DATA ===\nNo enrichment profile is available for this model.${selectedModel.link ? ` Direct the user to ${selectedModel.link}` : ""} and suggest they contact their Transcend design partner.`;
           }
-        }
-
-        // Web research — secondary fallback when enrichment is absent or thin
-        const hasSubstantiveEnrichment = enriched && Object.keys(enriched).filter(
-          (k) => k.endsWith("_detailed") && enriched[k] && enriched[k] !== "Not available from current sources"
-        ).length >= 3;
-
-        if (!hasSubstantiveEnrichment) {
-          const step8Data = (allStepData["8"] as Record<string, any>) ?? {};
-          const webContentKey = `webContent_${selectedModel.id}`;
-          let modelWebContent: string = step8Data[webContentKey] ?? "";
-
-          if (!modelWebContent) {
-            fetchModelWebResearch(selectedModel.name, selectedModel.link)
-              .then(async (content) => {
-                if (!content) return;
-                const fp = await storage.getWorkflowProgress(session.id);
-                if (!fp) return;
-                const us = { ...(fp.stepData as Record<string, any>) };
-                const fs8 = (us["8"] as Record<string, any>) ?? {};
-                if (!fs8[webContentKey]) {
-                  us["8"] = { ...fs8, [webContentKey]: content };
-                  await storage.updateWorkflowProgress(session.id, fp.currentStep, fp.stepsCompleted as number[], us);
-                }
-              })
-              .catch((err) => console.warn("[Step 8 stream] Background web research failed:", err));
-          }
-
-          if (modelWebContent) {
-            selectedModelContext += `\n\n=== MODEL RESEARCH SUMMARY (WEB) ===\n${modelWebContent}`;
-          } else if (!isGreeting) {
-            selectedModelContext += `\n\n=== MODEL RESEARCH SUMMARY ===\nResearch summary unavailable. Draw on your training knowledge about this model${selectedModel.link ? ` and direct the user to ${selectedModel.link}` : ""}.`;
-          }
+        } else {
+          selectedModelContext += `\n\n=== MODEL ENRICHMENT DATA ===\nNo enrichment profile is available for this model.${selectedModel.link ? ` Direct the user to ${selectedModel.link}` : ""} and suggest they contact their Transcend design partner.`;
         }
       }
 
@@ -986,10 +1119,10 @@ Use markdown formatting — headers and bullets for structured answers, prose fo
   // WORKFLOW PROGRESS
   // =========================================================================
 
-  app.get(api.workflow.getProgress.path, async (req, res) => {
+  app.get(api.workflow.getProgress.path, ...needUser, async (req, res) => {
     try {
       const session = await storage.getSession(req.params.sessionId as string);
-      if (!session) return res.status(404).json({ message: "Session not found" });
+      if (!sessionOk(req, session)) return res.status(404).json({ message: "Session not found" });
 
       let progress = await storage.getWorkflowProgress(session.id);
       if (!progress) {
@@ -1001,10 +1134,10 @@ Use markdown formatting — headers and bullets for structured answers, prose fo
     }
   });
 
-  app.post(api.workflow.updateProgress.path, async (req, res) => {
+  app.post(api.workflow.updateProgress.path, ...needUser, async (req, res) => {
     try {
       const session = await storage.getSession(req.params.sessionId as string);
-      if (!session) return res.status(404).json({ message: "Session not found" });
+      if (!sessionOk(req, session)) return res.status(404).json({ message: "Session not found" });
 
       const { currentStep, stepsCompleted, stepData } = api.workflow.updateProgress.input.parse(req.body);
       const progress = await storage.updateWorkflowProgress(session.id, currentStep, stepsCompleted, stepData);
@@ -1014,10 +1147,10 @@ Use markdown formatting — headers and bullets for structured answers, prose fo
     }
   });
 
-  app.post(api.workflow.confirmStep.path, async (req, res) => {
+  app.post(api.workflow.confirmStep.path, ...needUser, async (req, res) => {
     try {
       const session = await storage.getSession(req.params.sessionId as string);
-      if (!session) return res.status(404).json({ message: "Session not found" });
+      if (!sessionOk(req, session)) return res.status(404).json({ message: "Session not found" });
 
       const { stepNumber } = api.workflow.confirmStep.input.parse(req.body);
       const progress = await storage.getWorkflowProgress(session.id);
@@ -1048,10 +1181,10 @@ Use markdown formatting — headers and bullets for structured answers, prose fo
     }
   });
 
-  app.post(api.workflow.resetStep.path, async (req, res) => {
+  app.post(api.workflow.resetStep.path, ...needUser, async (req, res) => {
     try {
       const session = await storage.getSession(req.params.sessionId as string);
-      if (!session) return res.status(404).json({ message: "Session not found" });
+      if (!sessionOk(req, session)) return res.status(404).json({ message: "Session not found" });
 
       const { stepNumber } = api.workflow.resetStep.input.parse(req.body);
       await storage.resetWorkflowStep(session.id, stepNumber);
@@ -1061,10 +1194,10 @@ Use markdown formatting — headers and bullets for structured answers, prose fo
     }
   });
 
-  app.post(api.workflow.resetAll.path, async (req, res) => {
+  app.post(api.workflow.resetAll.path, ...needUser, async (req, res) => {
     try {
       const session = await storage.getSession(req.params.sessionId as string);
-      if (!session) return res.status(404).json({ message: "Session not found" });
+      if (!sessionOk(req, session)) return res.status(404).json({ message: "Session not found" });
 
       await storage.resetAllWorkflow(session.id);
       res.json({ message: "All steps reset" });
@@ -1077,10 +1210,10 @@ Use markdown formatting — headers and bullets for structured answers, prose fo
   // STEP CONVERSATIONS
   // =========================================================================
 
-  app.get(api.workflow.getConversation.path, async (req, res) => {
+  app.get(api.workflow.getConversation.path, ...needUser, async (req, res) => {
     try {
       const session = await storage.getSession(req.params.sessionId as string);
-      if (!session) return res.status(404).json({ message: "Session not found" });
+      if (!sessionOk(req, session)) return res.status(404).json({ message: "Session not found" });
 
       const stepNumber = Number(req.params.stepNumber);
       const messages = await storage.getStepConversations(session.id, stepNumber);
@@ -1090,55 +1223,11 @@ Use markdown formatting — headers and bullets for structured answers, prose fo
     }
   });
 
-  // Pre-warm the research cache for a model so it's ready before the user's first question.
-  // Called fire-and-forget from the client when a model tab is first opened.
-  app.post("/api/sessions/:sessionId/models/:modelId/prefetch-research", async (req, res) => {
-    try {
-      const session = await storage.getSession(req.params.sessionId as string);
-      if (!session) return res.status(404).json({ message: "Session not found" });
-
-      const modelId = Number(req.params.modelId);
-      const model = await storage.getModel(modelId);
-      if (!model) return res.status(404).json({ message: "Model not found" });
-
-      const progress = await storage.getWorkflowProgress(session.id);
-      if (!progress) return res.status(404).json({ message: "Workflow not found" });
-
-      const allStepData = progress.stepData as Record<string, any>;
-      const step8Data = (allStepData["8"] as Record<string, any>) ?? {};
-      const webContentKey = `webContent_${modelId}`;
-
-      // Already cached — nothing to do
-      if (step8Data[webContentKey]) {
-        return res.json({ ok: true, cached: true });
-      }
-
-      // Respond immediately so the client doesn't block, then fetch in background
-      res.json({ ok: true, cached: false });
-
-      fetchModelWebResearch(model.name, model.link)
-        .then(async (content) => {
-          if (!content) return;
-          const freshProgress = await storage.getWorkflowProgress(session.id);
-          if (!freshProgress) return;
-          const updatedStepData = { ...(freshProgress.stepData as Record<string, any>) };
-          const freshStep8 = (updatedStepData["8"] as Record<string, any>) ?? {};
-          if (!freshStep8[webContentKey]) {
-            updatedStepData["8"] = { ...freshStep8, [webContentKey]: content };
-            await storage.updateWorkflowProgress(session.id, freshProgress.currentStep, freshProgress.stepsCompleted as number[], updatedStepData);
-          }
-        })
-        .catch(err => console.warn(`[Step 8] Prefetch research failed for model ${modelId}:`, err));
-    } catch (err) {
-      res.status(500).json({ message: "Failed to prefetch research" });
-    }
-  });
-
   // Clear conversation history for a specific model in step 8 (uses virtual step number)
-  app.delete("/api/sessions/:sessionId/chat/model-conversation/:modelId", async (req, res) => {
+  app.delete("/api/sessions/:sessionId/chat/model-conversation/:modelId", ...needUser, async (req, res) => {
     try {
       const session = await storage.getSession(req.params.sessionId as string);
-      if (!session) return res.status(404).json({ message: "Session not found" });
+      if (!sessionOk(req, session)) return res.status(404).json({ message: "Session not found" });
       const modelId = Number(req.params.modelId);
       await storage.clearStepConversation(session.id, 8000 + modelId);
       res.json({ ok: true });
@@ -1151,10 +1240,10 @@ Use markdown formatting — headers and bullets for structured answers, prose fo
   // STEP DOCUMENTS
   // =========================================================================
 
-  app.get(api.workflow.getDocuments.path, async (req, res) => {
+  app.get(api.workflow.getDocuments.path, ...needUser, async (req, res) => {
     try {
       const session = await storage.getSession(req.params.sessionId as string);
-      if (!session) return res.status(404).json({ message: "Session not found" });
+      if (!sessionOk(req, session)) return res.status(404).json({ message: "Session not found" });
 
       const stepNumber = Number(req.params.stepNumber);
       const docs = await storage.getStepDocuments(session.id, stepNumber);
@@ -1164,10 +1253,10 @@ Use markdown formatting — headers and bullets for structured answers, prose fo
     }
   });
 
-  app.post("/api/sessions/:sessionId/workflow/documents/:stepNumber/upload", upload.single("file"), async (req, res) => {
+  app.post("/api/sessions/:sessionId/workflow/documents/:stepNumber/upload", ...needUser, upload.single("file"), async (req, res) => {
     try {
       const session = await storage.getSession(req.params.sessionId as string);
-      if (!session) return res.status(404).json({ message: "Session not found" });
+      if (!sessionOk(req, session)) return res.status(404).json({ message: "Session not found" });
       if (!req.file) return res.status(400).json({ message: "No file uploaded" });
 
       const stepNumber = Number(req.params.stepNumber);
@@ -1184,9 +1273,17 @@ Use markdown formatting — headers and bullets for structured answers, prose fo
     }
   });
 
-  app.delete("/api/sessions/:sessionId/workflow/documents/:docId", async (req, res) => {
+  app.delete("/api/sessions/:sessionId/workflow/documents/:docId", ...needUser, async (req, res) => {
     try {
-      await storage.deleteStepDocument(Number(req.params.docId));
+      const session = await storage.getSession(req.params.sessionId as string);
+      if (!sessionOk(req, session)) {
+        return res.status(404).json({ message: "Session not found" });
+      }
+      const doc = await storage.getStepDocumentById(Number(req.params.docId));
+      if (!doc || doc.sessionId !== session.id) {
+        return res.status(404).json({ message: "Document not found" });
+      }
+      await storage.deleteStepDocument(doc.id);
       res.json({ message: "Document deleted" });
     } catch (err) {
       res.status(500).json({ message: "Failed to delete document" });
@@ -1197,10 +1294,10 @@ Use markdown formatting — headers and bullets for structured answers, prose fo
   // VOICE TO TEXT (Whisper transcription for Step 1 context)
   // =========================================================================
 
-  app.post(api.workflow.voiceToText.path, upload.single("audio"), async (req, res) => {
+  app.post(api.workflow.voiceToText.path, ...needUser, upload.single("audio"), async (req, res) => {
     try {
       const session = await storage.getSession(req.params.sessionId as string);
-      if (!session) return res.status(404).json({ message: "Session not found" });
+      if (!sessionOk(req, session)) return res.status(404).json({ message: "Session not found" });
       if (!req.file) return res.status(400).json({ message: "No audio file provided" });
 
       const mimeType = req.file.mimetype || "audio/webm";
@@ -1234,10 +1331,10 @@ Use markdown formatting — headers and bullets for structured answers, prose fo
   // PRE-FILL FROM DOCUMENTS (Step 0 intake analysis)
   // =========================================================================
 
-  app.post(api.workflow.prefillFromDocuments.path, async (req, res) => {
+  app.post(api.workflow.prefillFromDocuments.path, ...needUser, async (req, res) => {
     try {
       const session = await storage.getSession(req.params.sessionId as string);
-      if (!session) return res.status(404).json({ message: "Session not found" });
+      if (!sessionOk(req, session)) return res.status(404).json({ message: "Session not found" });
 
       const introDocs = await storage.getStepDocuments(session.id, 0);
       if (introDocs.length === 0) {
@@ -1588,30 +1685,30 @@ EXPERIENCE_DESCRIPTION: 2-3 complete sentences. State what the program IS, what 
   // MODELS & RECOMMENDATIONS
   // =========================================================================
 
-  app.get(api.models.list.path, async (req, res) => {
+  app.get(api.models.list.path, ...needUser, async (req, res) => {
     const allModels = await storage.getAllModels();
     res.json(allModels);
   });
 
-  app.get(api.models.get.path, async (req, res) => {
+  app.get(api.models.get.path, ...needUser, async (req, res) => {
     const model = await storage.getModel(Number(req.params.id));
     if (!model) return res.status(404).json({ message: "Model not found" });
     res.json(model);
   });
 
-  app.get(api.models.getRecommendations.path, async (req, res) => {
+  app.get(api.models.getRecommendations.path, ...needUser, async (req, res) => {
     const sessionIdStr = req.params.sessionId as string;
     const session = await storage.getSession(sessionIdStr);
-    if (!session) return res.status(404).json({ message: "Session not found" });
+    if (!sessionOk(req, session)) return res.status(404).json({ message: "Session not found" });
     const recs = await storage.getRecommendations(session.id);
     res.json(recs);
   });
 
-  app.post(api.models.recommend.path, async (req, res) => {
+  app.post(api.models.recommend.path, ...needUser, async (req, res) => {
     try {
       const sessionIdStr = req.params.sessionId as string;
       const session = await storage.getSession(sessionIdStr);
-      if (!session) return res.status(404).json({ message: "Session not found" });
+      if (!sessionOk(req, session)) return res.status(404).json({ message: "Session not found" });
 
       await generateRecommendations(session.id);
 
@@ -1627,7 +1724,7 @@ EXPERIENCE_DESCRIPTION: 2-3 complete sentences. State what the program IS, what 
   // ADMIN CONFIG
   // =========================================================================
 
-  app.get(api.admin.getConfig.path, async (req, res) => {
+  app.get(api.admin.getConfig.path, ...needAdmin, async (req, res) => {
     const config = await storage.getAdvisorConfig();
     const defaultPrompt = getDefaultGlobalPrompt();
     res.json({
@@ -1637,7 +1734,7 @@ EXPERIENCE_DESCRIPTION: 2-3 complete sentences. State what the program IS, what 
     });
   });
 
-  app.post(api.admin.saveConfig.path, async (req, res) => {
+  app.post(api.admin.saveConfig.path, ...needAdmin, async (req, res) => {
     try {
       const { systemPrompt } = api.admin.saveConfig.input.parse(req.body);
       const config = await storage.saveAdvisorConfig(systemPrompt);
@@ -1652,7 +1749,7 @@ EXPERIENCE_DESCRIPTION: 2-3 complete sentences. State what the program IS, what 
   // STEP ADVISOR CONFIGS
   // =========================================================================
 
-  app.get(api.admin.getStepConfigs.path, async (req, res) => {
+  app.get(api.admin.getStepConfigs.path, ...needAdmin, async (req, res) => {
     try {
       const configs = await storage.getAllStepAdvisorConfigs();
       const defaults = getDefaultStepPrompts();
@@ -1673,7 +1770,7 @@ EXPERIENCE_DESCRIPTION: 2-3 complete sentences. State what the program IS, what 
     }
   });
 
-  app.post(api.admin.saveStepConfig.path, async (req, res) => {
+  app.post(api.admin.saveStepConfig.path, ...needAdmin, async (req, res) => {
     try {
       const stepNumber = Number(req.params.stepNumber);
       const { systemPrompt } = api.admin.saveStepConfig.input.parse(req.body);
@@ -1688,7 +1785,7 @@ EXPERIENCE_DESCRIPTION: 2-3 complete sentences. State what the program IS, what 
   // KNOWLEDGE BASE
   // =========================================================================
 
-  app.get(api.admin.getAirtableConfig.path, async (req, res) => {
+  app.get(api.admin.getAirtableConfig.path, ...needAdmin, async (req, res) => {
     try {
       const config = await storage.getAirtableConfig();
       res.json({
@@ -1701,7 +1798,7 @@ EXPERIENCE_DESCRIPTION: 2-3 complete sentences. State what the program IS, what 
     }
   });
 
-  app.post(api.admin.saveAirtableConfig.path, async (req, res) => {
+  app.post(api.admin.saveAirtableConfig.path, ...needAdmin, async (req, res) => {
     try {
       const body = api.admin.saveAirtableConfig.input?.parse?.(req.body) ?? req.body;
       await storage.saveAirtableConfig({ baseId: body.baseId, tableId: body.tableId, apiToken: body.apiToken });
@@ -1711,18 +1808,27 @@ EXPERIENCE_DESCRIPTION: 2-3 complete sentences. State what the program IS, what 
     }
   });
 
-  app.get(api.admin.getKnowledgeBase.path, async (req, res) => {
+  app.get(api.admin.getKnowledgeBase.path, ...needUser, async (req, res) => {
     try {
       const stepNum = req.query.stepNumber ? Number(req.query.stepNumber) : undefined;
-      const entries = stepNum ? await storage.getKnowledgeBase(stepNum) : await storage.getAllKnowledgeBase();
+      if (!stepNum) {
+        const allow = parseAdminEmails();
+        const u = req.authUser!;
+        if (!allow.length || !allow.includes(u.email.toLowerCase())) {
+          return res.status(403).json({ message: "Forbidden" });
+        }
+        const entries = await storage.getAllKnowledgeBase();
+        return res.json(entries);
+      }
+      const entries = await storage.getKnowledgeBase(stepNum);
       res.json(entries);
     } catch (err) {
       res.status(500).json({ message: "Failed to get knowledge base" });
     }
   });
 
-  // Download original KB file (public route — accessible from workflow)
-  app.get("/api/kb/:id/download", async (req, res) => {
+  // Download original KB file (authenticated — same as workflow)
+  app.get("/api/kb/:id/download", ...needUser, async (req, res) => {
     try {
       const id = Number(req.params.id);
       const fileInfo = await storage.getKnowledgeBaseFileData(id);
@@ -1739,7 +1845,7 @@ EXPERIENCE_DESCRIPTION: 2-3 complete sentences. State what the program IS, what 
     }
   });
 
-  app.post(api.admin.addKnowledgeBase.path, upload.single("file"), async (req, res) => {
+  app.post(api.admin.addKnowledgeBase.path, ...needAdmin, upload.single("file"), async (req, res) => {
     try {
       const stepNumber = Number(req.body.stepNumber);
       const title = req.body.title as string;
@@ -1771,7 +1877,7 @@ EXPERIENCE_DESCRIPTION: 2-3 complete sentences. State what the program IS, what 
     }
   });
 
-  app.delete(api.admin.deleteKnowledgeBase.path, async (req, res) => {
+  app.delete(api.admin.deleteKnowledgeBase.path, ...needAdmin, async (req, res) => {
     try {
       const id = Number(req.params.id);
       // Delete chunks first, then the entry itself
@@ -1784,7 +1890,7 @@ EXPERIENCE_DESCRIPTION: 2-3 complete sentences. State what the program IS, what 
   });
 
   // Re-index all KB entries (admin utility — chunks + embeds everything)
-  app.post("/api/admin/reindex-kb", async (req, res) => {
+  app.post("/api/admin/reindex-kb", ...needAdmin, async (req, res) => {
     try {
       const result = await reindexAllKnowledgeBase();
       res.json({ message: `Re-indexed ${result.entries} entries into ${result.total} chunks` });
@@ -1798,7 +1904,7 @@ EXPERIENCE_DESCRIPTION: 2-3 complete sentences. State what the program IS, what 
   // TAXONOMY ITEMS (admin CRUD)
   // =========================================================================
 
-  app.get(api.admin.getTaxonomy.path, async (req, res) => {
+  app.get(api.admin.getTaxonomy.path, ...needAdmin, async (req, res) => {
     try {
       const stepNumber = Number(req.params.stepNumber);
       const category = req.query.category as string | undefined;
@@ -1809,7 +1915,7 @@ EXPERIENCE_DESCRIPTION: 2-3 complete sentences. State what the program IS, what 
     }
   });
 
-  app.post(api.admin.createTaxonomyItem.path, async (req, res) => {
+  app.post(api.admin.createTaxonomyItem.path, ...needAdmin, async (req, res) => {
     try {
       const data = api.admin.createTaxonomyItem.input.parse(req.body);
       const item = await storage.createTaxonomyItem(data);
@@ -1819,7 +1925,7 @@ EXPERIENCE_DESCRIPTION: 2-3 complete sentences. State what the program IS, what 
     }
   });
 
-  app.put(api.admin.updateTaxonomyItem.path, async (req, res) => {
+  app.put(api.admin.updateTaxonomyItem.path, ...needAdmin, async (req, res) => {
     try {
       const id = Number(req.params.id);
       const updates = api.admin.updateTaxonomyItem.input.parse(req.body);
@@ -1830,7 +1936,7 @@ EXPERIENCE_DESCRIPTION: 2-3 complete sentences. State what the program IS, what 
     }
   });
 
-  app.delete(api.admin.deleteTaxonomyItem.path, async (req, res) => {
+  app.delete(api.admin.deleteTaxonomyItem.path, ...needAdmin, async (req, res) => {
     try {
       await storage.deleteTaxonomyItem(Number(req.params.id));
       res.json({ message: "Taxonomy item deleted" });
@@ -1839,7 +1945,7 @@ EXPERIENCE_DESCRIPTION: 2-3 complete sentences. State what the program IS, what 
     }
   });
 
-  app.get(api.admin.getTaxonomyGroupLabels.path, async (req, res) => {
+  app.get(api.admin.getTaxonomyGroupLabels.path, ...needUser, async (req, res) => {
     try {
       const category = req.params.category as string;
       const labels = await storage.getTaxonomyGroupLabels(category);
@@ -1849,7 +1955,7 @@ EXPERIENCE_DESCRIPTION: 2-3 complete sentences. State what the program IS, what 
     }
   });
 
-  app.post(api.admin.saveTaxonomyGroupLabel.path, async (req, res) => {
+  app.post(api.admin.saveTaxonomyGroupLabel.path, ...needAdmin, async (req, res) => {
     try {
       const { category, groupKey, label } = api.admin.saveTaxonomyGroupLabel.input.parse(req.body);
       const saved = await storage.saveTaxonomyGroupLabel(category, groupKey, label);
@@ -1859,7 +1965,7 @@ EXPERIENCE_DESCRIPTION: 2-3 complete sentences. State what the program IS, what 
     }
   });
 
-  app.post(api.admin.seedTaxonomy.path, async (req, res) => {
+  app.post(api.admin.seedTaxonomy.path, ...needAdmin, async (req, res) => {
     try {
       const result = await seedTaxonomy();
       res.json({
@@ -1872,7 +1978,7 @@ EXPERIENCE_DESCRIPTION: 2-3 complete sentences. State what the program IS, what 
     }
   });
 
-  app.post(api.admin.restoreDefaults.path, async (req, res) => {
+  app.post(api.admin.restoreDefaults.path, ...needAdmin, async (req, res) => {
     try {
       const taxonomyResult = await seedTaxonomy();
       await storage.saveAdvisorConfig(getDefaultGlobalPrompt());
@@ -1891,7 +1997,7 @@ EXPERIENCE_DESCRIPTION: 2-3 complete sentences. State what the program IS, what 
     }
   });
 
-  app.post(api.admin.parseTaxonomyFromKB.path, async (req, res) => {
+  app.post(api.admin.parseTaxonomyFromKB.path, ...needAdmin, async (req, res) => {
     try {
       const { stepNumber, knowledgeBaseId } = api.admin.parseTaxonomyFromKB.input.parse(req.body);
       const kbEntries = await storage.getKnowledgeBase(stepNumber);
@@ -2048,7 +2154,7 @@ Rules:
   // ADMIN — Model Field Defs
   // =========================================================================
 
-  app.get(api.admin.getModelFieldDefs.path, async (_req, res) => {
+  app.get(api.admin.getModelFieldDefs.path, ...needAdmin, async (_req, res) => {
     try {
       const defs = await storage.getModelFieldDefs();
       res.json(defs);
@@ -2057,7 +2163,7 @@ Rules:
     }
   });
 
-  app.post(api.admin.createModelFieldDef.path, async (req, res) => {
+  app.post(api.admin.createModelFieldDef.path, ...needAdmin, async (req, res) => {
     try {
       const def = await storage.createModelFieldDef(req.body);
       res.status(201).json(def);
@@ -2066,7 +2172,7 @@ Rules:
     }
   });
 
-  app.put(api.admin.updateModelFieldDef.path, async (req, res) => {
+  app.put(api.admin.updateModelFieldDef.path, ...needAdmin, async (req, res) => {
     try {
       const id = Number(req.params.id);
       const updated = await storage.updateModelFieldDef(id, req.body);
@@ -2076,7 +2182,7 @@ Rules:
     }
   });
 
-  app.delete(api.admin.deleteModelFieldDef.path, async (req, res) => {
+  app.delete(api.admin.deleteModelFieldDef.path, ...needAdmin, async (req, res) => {
     try {
       const id = Number(req.params.id);
       await storage.deleteModelFieldDef(id);
@@ -2090,7 +2196,7 @@ Rules:
   // ADMIN — Scoring Rules
   // =========================================================================
 
-  app.get(api.admin.getScoringRules.path, async (req, res) => {
+  app.get(api.admin.getScoringRules.path, ...needAdmin, async (req, res) => {
     try {
       const fieldDefId = req.query.fieldDefId ? Number(req.query.fieldDefId) : undefined;
       const rules = await storage.getScoringRules(fieldDefId);
@@ -2100,7 +2206,7 @@ Rules:
     }
   });
 
-  app.post(api.admin.createScoringRule.path, async (req, res) => {
+  app.post(api.admin.createScoringRule.path, ...needAdmin, async (req, res) => {
     try {
       const rule = await storage.createScoringRule(req.body);
       res.status(201).json(rule);
@@ -2109,7 +2215,7 @@ Rules:
     }
   });
 
-  app.put(api.admin.updateScoringRule.path, async (req, res) => {
+  app.put(api.admin.updateScoringRule.path, ...needAdmin, async (req, res) => {
     try {
       const id = Number(req.params.id);
       const updated = await storage.updateScoringRule(id, req.body);
@@ -2119,7 +2225,7 @@ Rules:
     }
   });
 
-  app.delete(api.admin.deleteScoringRule.path, async (req, res) => {
+  app.delete(api.admin.deleteScoringRule.path, ...needAdmin, async (req, res) => {
     try {
       const id = Number(req.params.id);
       await storage.deleteScoringRule(id);
@@ -2129,7 +2235,7 @@ Rules:
     }
   });
 
-  app.post(api.admin.generateWatchoutMessage.path, async (req, res) => {
+  app.post(api.admin.generateWatchoutMessage.path, ...needAdmin, async (req, res) => {
     try {
       const { fieldDefId, modelValue, schoolAnswerKey, schoolAnswerValue, impact } = req.body;
 
@@ -2169,7 +2275,7 @@ Write a brief (1-2 sentence) explanation of why this combination might be a conc
   // ADMIN — Scoring Config
   // =========================================================================
 
-  app.get(api.admin.getScoringConfig.path, async (_req, res) => {
+  app.get(api.admin.getScoringConfig.path, ...needAdmin, async (_req, res) => {
     try {
       const configs = await storage.getScoringConfigs();
       res.json(configs);
@@ -2178,7 +2284,7 @@ Write a brief (1-2 sentence) explanation of why this combination might be a conc
     }
   });
 
-  app.post(api.admin.updateScoringConfig.path, async (req, res) => {
+  app.post(api.admin.updateScoringConfig.path, ...needAdmin, async (req, res) => {
     try {
       const { key, value, label } = req.body;
       const config = await storage.upsertScoringConfig(key, value, label);
@@ -2192,7 +2298,7 @@ Write a brief (1-2 sentence) explanation of why this combination might be a conc
   // TAXONOMY (public — for workflow UI)
   // =========================================================================
 
-  app.get(api.taxonomy.getItems.path, async (req, res) => {
+  app.get(api.taxonomy.getItems.path, ...needUser, async (req, res) => {
     try {
       const stepNumber = Number(req.params.stepNumber);
       const items = await storage.getTaxonomyItems(stepNumber);
@@ -2202,7 +2308,7 @@ Write a brief (1-2 sentence) explanation of why this combination might be a conc
     }
   });
 
-  app.get(api.taxonomy.getItem.path, async (req, res) => {
+  app.get(api.taxonomy.getItem.path, ...needUser, async (req, res) => {
     try {
       const id = Number(req.params.id);
       const item = await storage.getTaxonomyItem(id);

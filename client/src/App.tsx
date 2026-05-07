@@ -12,6 +12,7 @@ import LeapDetail from "@/pages/LeapDetail";
 import PracticeDetail from "@/pages/PracticeDetail";
 import AdminSettings from "@/pages/AdminSettings";
 import Login from "@/pages/Login";
+import VerifyEmail from "@/pages/VerifyEmail";
 import { useAuth } from "@/hooks/use-auth";
 
 function LegacyV2Redirect() {
@@ -20,7 +21,7 @@ function LegacyV2Redirect() {
 }
 
 function ProtectedRoute({ component: Component }: { component: React.ComponentType }) {
-  const { isAuthenticated, isLoading } = useAuth();
+  const { user, isLoading } = useAuth();
   const [location] = useLocation();
 
   if (isLoading) {
@@ -31,8 +32,39 @@ function ProtectedRoute({ component: Component }: { component: React.ComponentTy
     );
   }
 
-  if (!isAuthenticated) {
+  if (!user) {
     return <Redirect to={`/login?redirect=${encodeURIComponent(location)}`} />;
+  }
+
+  if (!user.emailVerifiedAt) {
+    return <Redirect to={`/verify-email?email=${encodeURIComponent(user.email)}`} />;
+  }
+
+  return <Component />;
+}
+
+function AdminRoute({ component: Component }: { component: React.ComponentType }) {
+  const { user, isLoading } = useAuth();
+  const [location] = useLocation();
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="w-6 h-6 rounded-full border-2 border-primary border-t-transparent animate-spin" />
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <Redirect to={`/login?redirect=${encodeURIComponent(location)}`} />;
+  }
+
+  if (!user.emailVerifiedAt) {
+    return <Redirect to={`/verify-email?email=${encodeURIComponent(user.email)}`} />;
+  }
+
+  if (!user.isAdmin) {
+    return <Redirect to="/ccl" />;
   }
 
   return <Component />;
@@ -42,6 +74,7 @@ function Router() {
   return (
     <Switch>
       <Route path="/login" component={Login} />
+      <Route path="/verify-email" component={VerifyEmail} />
       <Route path="/" component={() => <ProtectedRoute component={Landing} />} />
       {/* Session list for CCL */}
       <Route path="/ccl" component={() => <ProtectedRoute component={Sessions} />} />
@@ -57,7 +90,7 @@ function Router() {
       <Route path="/leaps/:id" component={() => <ProtectedRoute component={LeapDetail} />} />
       <Route path="/practices/:id" component={() => <ProtectedRoute component={PracticeDetail} />} />
       <Route path="/admin/import" component={() => { window.location.replace("/admin/settings"); return null; }} />
-      <Route path="/admin/settings" component={() => <ProtectedRoute component={AdminSettings} />} />
+      <Route path="/admin/settings" component={() => <AdminRoute component={AdminSettings} />} />
       <Route component={NotFound} />
     </Switch>
   );

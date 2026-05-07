@@ -1,22 +1,27 @@
 ---
 name: model-exploration-chat
-description: Guides changes to the Model Exploration AI chat (Step 8) in the Transcend Model Recommendation Engine. Use when modifying what context is injected into model chat, how web research works, how conversation history is stored, or when implementing topic-based guided chat flows.
+description: Guides changes to the Model Exploration AI chat (Step 8) in the Transcend Model Recommendation Engine. Use when modifying what context is injected into model chat, how conversation history is stored, or when implementing topic-based guided chat flows.
 ---
 
 # Model Exploration Chat — How It Works & How to Modify It
 
 ## Where the code lives
 
-**Server route:** `server/routes.ts` — `app.post(api.chat.stepAdvisor.path, ...)` (~line 274)
-This single route handles ALL step chat, including Step 8. Step 8 behavior is gated by `if (stepNumber === 8)`.
+**Streaming route:** `server/routes.ts` — `app.post("/api/chat/step8/stream", ...)` (~line 923)
+This is the primary Step 8 chat handler. It handles topic-aware context injection, enrichment rendering, and SSE streaming.
+
+**Non-streaming route:** `server/routes.ts` — `app.post(api.chat.stepAdvisor.path, ...)` (~line 553)
+Legacy handler. Step 8 behavior is gated by `if (stepNumber === 8)`.
 
 **Client:** `client/src/pages/WorkflowV2.tsx`
 - `ModelConversationPanel` — outer layout, model list, chat panel toggle
-- `ModelChatPanel` — the actual chat UI for a single model (includes topic tree)
-- `TopicTreeSelector` — three-branch guided topic selection component
+- `ModelChatPanel` — the chat UI for a single model (includes topic tree)
+- `TopicTreeSelector` — two-branch guided topic selection component
 - `TOPIC_TREE` / `TOPIC_LABELS` — topic tree structure and human-readable labels
 
 **Clear conversation route:** `DELETE /api/sessions/:sessionId/chat/model-conversation/:modelId` (~line 966)
+
+---
 
 ## How Step 8 chat works
 
@@ -26,25 +31,39 @@ The system prompt for Step 8 chat is assembled from these layers (in order):
 
 1. **Global advisor prompt** — from `advisor_config` table (admin-configurable)
 2. **Step 8 prompt** — from `step_advisor_configs` table for step 8 (admin-configurable), fallback to `getDefaultStepPrompts()[8]` in `server/prompts.ts`
-3. **School design documents** — all documents uploaded to step 0 (the intake documents)
-4. **KB RAG retrieval** — top 12 relevant chunks from the knowledge base, retrieved via embedding similarity to the user's message
-5. **Prior steps context** — all `stepData` from steps 1–7 (school context, aims, practices, system elements, preferences)
-6. **Model profile** — full model record from DB: name, grades, description, keyPractices, outcomeTypes, implementationSupports, link, and any `attributes` JSON
-7. **Web research summary** — live web search result cached in `stepData["8"].webContent_{modelId}`
+3. **School design documents** — all documents uploaded to step 0
+4. **KB RAG retrieval** — top 12 relevant chunks from the knowledge base (embedding similarity to user message); for watchout topics, the system_elements reference doc is retrieved deterministically
+5. **Prior steps context** — all `stepData` from steps 1–7
+6. **Model profile** — name, grades, description, keyPractices, outcomeTypes, implementationSupports, link, attributes
+7. **Enrichment data** — the full `enrichedContent` JSONB (12 flat sections), labeled as "authoritative source — curated from program's own materials"
+
+### What is NOT used
+
+- **Web search** — fully removed from Step 8. The chat handler relies exclusively on the model's enrichment data, profile metadata, and decision frame.
+- **AI training knowledge about the model** — the system prompt instructs the AI to stick to the enrichment data and model profile.
 
 ### Conversation history isolation
 
-Each model gets its own independent conversation history, stored using a **virtual step number**:
+Each model gets its own independent conversation history using a virtual step number:
 ```
 conversationStepNumber = 8000 + modelId
 ```
-This means model ID 42 stores its chat at virtual step 8042. Different models never share history.
+Model ID 42 stores its chat at virtual step 8042. Models never share history.
 
-### Web research caching
+---
 
-- **First message (greeting `__greeting__`):** Web research fires in the background (fire-and-forget). The greeting response goes out without web content. Research result is saved to `stepData["8"].webContent_{modelId}` once it completes.
-- **Subsequent messages:** If `webContent_{modelId}` is already cached in stepData, it's used directly. If not, the route fetches it synchronously before responding.
-- **`fetchModelWebResearch()`** uses `gpt-4o-search-preview` to do a real-time web search for the model name + website.
+## Enrichment as the authoritative source
+
+The enrichment profile (`models.enrichedContent`) is the primary substantive context for all Step 8 responses. When it's present:
+- It is labeled `=== MODEL ENRICHMENT DATA (authoritative source — curated from program's own materials) ===`
+- All 12 sections are injected
+
+When enrichment is null or empty for a model:
+- The chat tells the user, directs them to the program website, and suggests contacting their Transcend design partner
+
+There is no web search fallback.
+
+---
 
 ## How to modify the system prompt for Step 8
 
@@ -52,59 +71,47 @@ This means model ID 42 stores its chat at virtual step 8042. Different models ne
 
 **Option 2 (change the default):** Edit `server/prompts.ts`, find `getDefaultStepPrompts()`, modify the entry for step 8.
 
-## Model enrichment as first-pass context
-
-The enrichment pipeline pre-collects detailed, structured content about each model from their website. Enrichment data is stored in `models.enrichedContent` (JSONB) and `models.enrichedAt` (timestamp). The full specification lives in:
-
-**→ See `.cursor/skills/model-enrichment/SKILL.md`**
-
-### Context injection priority
-
-When enrichment data exists, it is the **primary context source** — injected before web research in the system prompt. Web search is a secondary fallback, triggered only when:
-- Enrichment is null (model not yet enriched)
-- The enrichment field for the current topic says "Not available from current sources"
-- The user explicitly asks for live/current information
-
-### Airtable sync preserves enrichment
-
-The sync uses a two-tier upsert (match by `airtableRecordId` first, then by name). Model DB IDs and enrichment data are never deleted during sync. See the enrichment skill for full details on the matching strategy.
+---
 
 ## Topic-based guided chat
 
-The full behavioral spec for the topic tree — branches, sub-branches, per-topic context injection, search strategies, executive summary format, Ask AI button routing, and tone — lives in a separate skill:
+The full behavioral spec for the topic tree — branches, sub-branches, per-topic context injection, executive summary format, and tone — lives in a separate skill:
 
 **→ See `.cursor/skills/model-exploration-topics/SKILL.md`**
 
-Reference documents that define CCL taxonomy items (outcomes, LEAPs, practices, system elements) live in `docs/reference-docs/`. These are used as deterministic context injection (by `referenceType`) rather than embedding-based RAG when the user is in a topic-specific flow.
+### How topic injection works
 
-**Implementation approach:**
-1. Add a `topic` field to the chat request payload (`api.chat.stepAdvisor.input` in `shared/routes.ts`)
-2. In the server route, check the `topic` field and retrieve the appropriate reference docs by `referenceType` + build a topic-specific system prompt addendum
-3. Replace `CONVERSATION_STARTERS` in `ModelChatPanel` with the three-card topic tree UI
-4. Add "Ask AI" buttons to the model card (alignment section, each watch out row, model details) that open the chat panel positioned at the corresponding branch
+1. Client sends `topic` field in the streaming chat request body
+2. Server calls `getTopicReferenceTypes(topic)` → returns `["system_elements"]` for watchouts, `null` otherwise
+3. Server calls `getTopicPromptAddendum(topic, stepData)` → returns a section-specific instruction block
+4. Addendum is appended to the system prompt after the enrichment data
 
-## How the topic tree works
+### Topic tree UI
 
-The flat `CONVERSATION_STARTERS` array has been replaced by a `TopicTreeSelector` component that presents a three-level guided tree:
+`WorkflowV2.tsx` → `TopicTreeSelector`:
+- **Level 0:** Two cards — "Let's talk about the model", "Let's talk about watch outs"
+- **Branch 1 (Model):** 13 sub-options (Executive Summary + 12 enrichment sections)
+- **Branch 2 (Watch Outs):** Lists the user's specific constraint flags from alignment data
 
-- **Level 0:** Three cards — "Let's talk about the model", "Let's talk about our alignment", "Let's talk about watch outs"
-- **Branch 1 (Model):** Executive Summary, Overview of Practices, Overview of Outcomes, Overview of LEAPs
-- **Branch 2 (Alignment):** Overall alignment, Alignment on Outcomes, Alignment on LEAPs, Alignment on Practices
-- **Branch 3 (Watch Outs):** Lists the user's specific constraint flags from alignment data
+Interaction patterns:
+- Collapsible "Explore a topic" toggle when closed
+- Back-arrow navigation between root and sub-branch
+- Chip-style buttons for each option
+- Watch outs card is disabled/greyed when no flags are present
+- Watch out count badge shows number of flags
 
-The topic tree is shown both in the empty chat state and after the greeting message finishes streaming. Selecting a topic sends a pre-formed message with the `topic` field to the backend for topic-aware context injection.
-
-"Ask AI" buttons on the model card open the chat panel positioned at the relevant branch (alignment section → Branch 2, each watchout → skips to that specific watchout, model details → Branch 1).
+---
 
 ## Key data locations
 
 | Data | Location |
 |------|----------|
 | Model profile | `models` table → `storage.getModel(modelId)` |
-| Web research cache | `stepData["8"].webContent_{modelId}` |
+| Enrichment data | `models.enrichedContent` (JSONB) |
 | Chat history | `step_conversations` table, `stepNumber = 8000 + modelId` |
 | System prompt (default) | `server/prompts.ts` → `getDefaultStepPrompts()[8]` |
 | System prompt (admin override) | `step_advisor_configs` table, `stepNumber = 8` |
 | Topic tree UI | `WorkflowV2.tsx` → `TopicTreeSelector`, `TOPIC_TREE`, `TOPIC_LABELS` |
-| Topic prompt functions | `server/prompts.ts` → `getTopicPromptAddendum()`, `getTopicReferenceTypes()`, `getTopicWebSearchQuery()` |
-| Reference documents | `docs/reference-docs/` (outcomes, LEAPs, practices, system elements PDFs) |
+| Topic prompt functions | `server/prompts.ts` → `getTopicPromptAddendum()`, `getTopicReferenceTypes()` |
+| Reference documents | `docs/reference-docs/` (system elements PDF used for watchouts) |
+| Enrichment profile source | `docs/enrichment-export/enrichment-export-rebuilt.md` |
